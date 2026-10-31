@@ -297,8 +297,16 @@ section[data-testid="stSidebar"] .stButton > button[kind="primary"] {
 /* Bottom floating input container background fix */
 [data-testid="stBottom"],
 [data-testid="stBottom"] > div,
-[data-testid="stChatInputContainer"] {
-  background: transparent !important;
+[data-testid="stBottom"] > div > div,
+[data-testid="stChatFloatingInputContainer"],
+div[class*="stBottom"],
+div[class*="floating"],
+div[class*="bottom"],
+footer {
+  background: #070B16 !important;
+  background-color: #070B16 !important;
+  color: #F8FAFC !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
 }
 
 /* ── METRICS ── */
