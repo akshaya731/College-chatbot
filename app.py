@@ -258,25 +258,29 @@ section[data-testid="stSidebar"] .stButton > button[kind="primary"] {
 
 /* ── CHAT INPUT (STABLE NATIVE CONTRAST) ── */
 [data-testid="stChatInput"] {
-  background: #0D1527 !important;
-  border: 1px solid rgba(99, 102, 241, 0.45) !important;
-  border-radius: 16px !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45) !important;
+  background: #0E1726 !important;
+  background-color: #0E1726 !important;
+  border: 1.5px solid rgba(99, 102, 241, 0.55) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.6) !important;
 }
 
 [data-testid="stChatInput"]:focus-within {
   border-color: #818CF8 !important;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3), 0 10px 30px rgba(0, 0, 0, 0.45) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.35), 0 8px 30px rgba(0, 0, 0, 0.7) !important;
 }
 
 [data-testid="stChatInput"] textarea,
 [data-testid="stChatInput"] input,
-[data-testid="stChatInputContainer"] textarea {
+[data-testid="stChatInputContainer"] textarea,
+div[data-testid="stChatInput"] textarea {
   color: #FFFFFF !important;
   -webkit-text-fill-color: #FFFFFF !important;
   background: transparent !important;
+  background-color: transparent !important;
   font-size: 14.5px !important;
   font-weight: 500 !important;
+  caret-color: #818CF8 !important;
 }
 
 [data-testid="stChatInput"] textarea::placeholder,
