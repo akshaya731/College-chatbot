@@ -134,6 +134,34 @@ STUDENT QUESTION:
 ANSWER:"""
 
 
+# Common conversational greeting phrases that do not require vector search
+GREETING_PATTERNS = {
+    "hi", "hello", "hey", "hola", "greetings", "good morning", "good afternoon",
+    "good evening", "how are you", "who are you", "what can you do", "help", "start"
+}
+
+
+def is_conversational_greeting(text: str) -> bool:
+    """Detects simple greetings to skip 30-second vector search."""
+    cleaned = re.sub(r"[^\w\s]", "", text.strip().lower())
+    return cleaned in GREETING_PATTERNS or cleaned.startswith("hi ") or cleaned.startswith("hello ")
+
+
+def get_conversational_response(text: str) -> str:
+    """Instant sub-second greeting response."""
+    return (
+        f"Hello! 👋 Welcome to **CampusConnect AI**, the official virtual assistant for "
+        f"**{COLLEGE_NAME}**.\n\n"
+        f"I can help you with factual information directly from official college documents:\n"
+        f"• 💳 **Fee Structure:** Tuition and program amounts for B.Tech, M.Tech, MBA & Diploma\n"
+        f"• 🎓 **Admissions & Eligibility:** Entrance exams (EAMCET), counselling & criteria\n"
+        f"• 📅 **Attendance & Regulations:** M24 academic credits, condonation rules & semester duration\n"
+        f"• 📝 **Examinations & Grading:** Internal CIE and external SEE evaluation rules\n"
+        f"• 🔬 **Departments & Specialisations:** CSE (AI&ML, Data Science), ECE, EEE, Mechanical & Civil\n\n"
+        f"What would you like to know today?"
+    )
+
+
 def extract_urls(text: str) -> List[str]:
     """Helper to detect URLs in retrieved document text."""
     url_pattern = r"https?://[^\s<>\"']+"

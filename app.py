@@ -27,6 +27,8 @@ from rag_pipeline import (
     search_knowledge_base,
     check_system_health,
     reload_vectorstore,
+    is_conversational_greeting,
+    get_conversational_response,
 )
 from ingest import build_vector_database
 
@@ -56,6 +58,21 @@ for k, v in {
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+
+@st.cache_resource(show_spinner=False)
+def prewarm_rag_engine():
+    """Pre-warms embedding weights and vectorstore on startup to avoid cold start lag."""
+    try:
+        from rag_pipeline import get_cached_embeddings, get_cached_vectorstore
+        get_cached_embeddings()
+        get_cached_vectorstore()
+        return True
+    except Exception:
+        return False
+
+# Initialize in-memory RAG singleton on startup
+prewarm_rag_engine()
 
 # ─────────────────────────────────────────────
 # 3. GLOBAL CSS — FULL PRODUCTION DESIGN SYSTEM
@@ -616,6 +633,19 @@ with st.sidebar:
             if st.button(f"◦  {short}", key=f"hist_{i}", use_container_width=True):
                 set_pending(q); st.rerun()
 
+    # Design Studio Connectors
+    st.markdown('<div class="sb-section">Design Studio</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="padding: 0 10px; margin-bottom: 6px;">
+      <a href="https://www.figma.com/design/hALGvS4Oin6XzaE7sFKV9j" target="_blank" style="text-decoration:none; display:flex; align-items:center; gap:8px; padding:8px 12px; background:rgba(99,102,241,0.12); border:1px solid rgba(99,102,241,0.3); border-radius:8px; color:#CAD8FF; font-size:12px; font-weight:600; margin-bottom:6px;">
+        <span>🎨</span> Figma UI Architecture ↗
+      </a>
+      <a href="https://canva.link/wm3n3kn0r5b7khr" target="_blank" style="text-decoration:none; display:flex; align-items:center; gap:8px; padding:8px 12px; background:rgba(59,130,246,0.12); border:1px solid rgba(59,130,246,0.3); border-radius:8px; color:#93C5FD; font-size:12px; font-weight:600;">
+        <span>✨</span> Canva Portal Banner ↗
+      </a>
+    </div>
+    """, unsafe_allow_html=True)
+
     # Status card
     st.markdown(f"""
     <div class="sb-status">
@@ -712,6 +742,21 @@ if st.session_state.page == "AI Assistant":
                         for u in src.get("urls", []):
                             st.markdown(f"🔗 [Official Link]({u})")
 
+                    unique_files = list(dict.fromkeys(s["source"] for s in sources))
+                    dl_cols = st.columns(min(len(unique_files), 3))
+                    for d_idx, fname in enumerate(unique_files[:3]):
+                        fpath = config.DOCUMENTS_DIR / fname
+                        if fpath.exists():
+                            with dl_cols[d_idx]:
+                                st.download_button(
+                                    label=f"📥 {fname}",
+                                    data=fpath.read_bytes(),
+                                    file_name=fname,
+                                    mime="application/pdf",
+                                    key=f"dl_hist_{idx}_{d_idx}",
+                                    use_container_width=True,
+                                )
+
                 m_col, f_col = st.columns([3, 1])
                 with m_col:
                     st.caption(f"⚡ {msg.get('latency',0)}s · {msg.get('model','').split('/')[-1]} · {msg.get('timestamp','')}")
@@ -748,11 +793,22 @@ if st.session_state.page == "AI Assistant":
 
         t0 = time.perf_counter()
         with st.chat_message("assistant", avatar="🎓"):
-            with st.spinner("Searching official MIST knowledge base…"):
-                prompt, sources, _ = prepare_rag_context(q, top_k=st.session_state.top_k)
-            llm = get_cached_llm(model_name=st.session_state.selected_model, temperature=st.session_state.temperature)
-            response = st.write_stream(chunk.content for chunk in llm.stream(prompt) if chunk.content)
-            elapsed = round(time.perf_counter() - t0, 2)
+            # Instant Greeting Fast-Path
+            if is_conversational_greeting(q):
+                fast_greeting = get_conversational_response(q)
+                def stream_greeting():
+                    for word in fast_greeting.split(" "):
+                        yield word + " "
+                        time.sleep(0.015)
+                response = st.write_stream(stream_greeting())
+                sources = []
+                elapsed = round(time.perf_counter() - t0, 2)
+            else:
+                with st.spinner("Searching official MIST knowledge base…"):
+                    prompt, sources, _ = prepare_rag_context(q, top_k=st.session_state.top_k)
+                llm = get_cached_llm(model_name=st.session_state.selected_model, temperature=st.session_state.temperature)
+                response = st.write_stream(chunk.content for chunk in llm.stream(prompt) if chunk.content)
+                elapsed = round(time.perf_counter() - t0, 2)
 
             if sources:
                 with st.expander(f"📚 {len(sources)} verified source(s) cited", expanded=False):
@@ -761,6 +817,21 @@ if st.session_state.page == "AI Assistant":
                         st.markdown(f"<div class='src-excerpt'>{src['snippet']}</div>", unsafe_allow_html=True)
                         for u in src.get("urls", []):
                             st.markdown(f"🔗 [Official Link]({u})")
+
+                    unique_files = list(dict.fromkeys(s["source"] for s in sources))
+                    dl_cols = st.columns(min(len(unique_files), 3))
+                    for d_idx, fname in enumerate(unique_files[:3]):
+                        fpath = config.DOCUMENTS_DIR / fname
+                        if fpath.exists():
+                            with dl_cols[d_idx]:
+                                st.download_button(
+                                    label=f"📥 {fname}",
+                                    data=fpath.read_bytes(),
+                                    file_name=fname,
+                                    mime="application/pdf",
+                                    key=f"dl_hist_{idx}_{d_idx}",
+                                    use_container_width=True,
+                                )
 
             st.caption(f"⚡ {elapsed}s · {st.session_state.selected_model.split('/')[-1]} · {datetime.now().strftime('%H:%M')}")
             followups = get_suggested_followups(q, response or "")
@@ -806,6 +877,24 @@ elif st.session_state.page == "College Dashboard":
     m2.metric("Vector Chunks",    h.get("chunks_indexed", 0),     "ChromaDB embeddings")
     m3.metric("Inference Engine", "Groq LPU",                     "Sub-second latency")
     m4.metric("Accreditation",    "NAAC A+",                      "Autonomous · JNTUH")
+
+    st.write("")
+    with st.container(border=True):
+        st.markdown("### 🎨 Design Studio Assets (Figma & Canva)")
+        st.caption("Visual assets, layout architecture, and banners created via connected design tools:")
+        c_figma, c_canva = st.columns(2)
+        with c_figma:
+            st.markdown("""
+            **🎨 Figma UI Architecture**  
+            Multi-workspace design system, token bindings, and component layouts.  
+            [👉 Open Figma Design (hALGvS4Oin6XzaE7sFKV9j)](https://www.figma.com/design/hALGvS4Oin6XzaE7sFKV9j)
+            """)
+        with c_canva:
+            st.markdown("""
+            **✨ Canva Campus Portal Banner**  
+            Executive dark-theme campus hero layout and promotional visual cards.  
+            [👉 Open Canva Design (DAHZlnkLxsY)](https://canva.link/wm3n3kn0r5b7khr)
+            """)
 
     st.write("")
     with st.container(border=True):
