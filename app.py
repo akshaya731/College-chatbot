@@ -1,725 +1,989 @@
-import streamlit as st
-import streamlit.components.v1 as components
+import os
+import sys
+import time
+from datetime import datetime
 from pathlib import Path
-from rag_pipeline import get_answer
+from typing import Dict, Any, List
+
+import streamlit as st
+from pypdf import PdfReader
+
+# Ensure stdout uses UTF-8 to prevent charmap errors on Windows
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
+
+import config
+from rag_pipeline import (
+    get_answer_detailed,
+    search_knowledge_base,
+    check_system_health,
+    reload_vectorstore,
+    get_cached_vectorstore,
+    extract_urls,
+)
+from ingest import build_vector_database
 
 # =========================================================
 # 1. PAGE SETUP
 # =========================================================
 st.set_page_config(
-    page_title="MIST College Chatbot",
+    page_title="MIST Connect AI · College Knowledge Desk",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-BASE_DIR = Path(__file__).resolve().parent
-DOCUMENTS_DIR = BASE_DIR / "documents"
-
 # =========================================================
-# 2. SESSION STATE
+# 2. SESSION STATE MANAGEMENT
 # =========================================================
-DEFAULTS = {
+DEFAULT_SESSION_STATE = {
     "messages": [],
     "page": "AI Assistant",
-    "pending_question": None,
-    "chat_input_value": "",
+    "selected_model": config.DEFAULT_LLM_MODEL,
+    "top_k": config.DEFAULT_TOP_K,
+    "temperature": config.DEFAULT_TEMPERATURE,
     "conversation_history": [],
+    "query_analytics": [],
+    "feedback_store": {},
 }
-for key, value in DEFAULTS.items():
+
+for key, val in DEFAULT_SESSION_STATE.items():
     if key not in st.session_state:
-        st.session_state[key] = value
+        st.session_state[key] = val
+
 
 # =========================================================
-# 3. PROFESSIONAL DARK WORKSPACE THEME
+# 3. HIGH-END UI STYLING & THEMING (CSS)
 # =========================================================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 :root {
-    --page: #080D1B;
-    --panel: #0D1528;
-    --panel-2: #111D35;
-    --line: rgba(148, 163, 220, .16);
-    --muted: #9AA9C8;
-    --text: #F4F7FF;
-    --accent: #7C72FF;
-    --accent-2: #4F8CFF;
+    --bg-page: #070B16;
+    --bg-card: #0D1426;
+    --bg-card-hover: #131C35;
+    --bg-surface: #101930;
+    --border-subtle: rgba(135, 156, 225, 0.14);
+    --border-accent: rgba(124, 114, 255, 0.35);
+    --text-primary: #F4F7FF;
+    --text-secondary: #9EAFD0;
+    --text-muted: #6C7F9F;
+    --brand-primary: #6366F1;
+    --brand-secondary: #3B82F6;
+    --brand-gradient: linear-gradient(135deg, #6366F1 0%, #3B82F6 100%);
+    --card-glow: 0 8px 30px rgba(0, 0, 0, 0.25);
+    --accent-emerald: #10B981;
 }
 
+/* App Background */
 .stApp {
-    background:
-      radial-gradient(ellipse at 72% 0%, rgba(55, 75, 165, .18), transparent 34%),
-      radial-gradient(ellipse at 0% 100%, rgba(37, 73, 145, .12), transparent 30%),
-      var(--page);
-    color: var(--text);
-    font-family: 'DM Sans', sans-serif;
-}
-.block-container {
-    max-width: 1280px;
-    padding-top: 1.45rem;
-    padding-bottom: 2.8rem;
-}
-h1, h2, h3 {
-    font-family: 'Space Grotesk', 'DM Sans', sans-serif !important;
-    color: var(--text) !important;
-    letter-spacing: -.4px;
-}
-p, label, .stMarkdown, [data-testid="stCaptionContainer"] {
-    color: #D6DEF2;
-}
-hr {
-    border-color: var(--line) !important;
+    background: radial-gradient(circle at 80% 0%, rgba(99, 102, 241, 0.12) 0%, transparent 40%),
+                radial-gradient(circle at 10% 90%, rgba(59, 130, 246, 0.08) 0%, transparent 40%),
+                var(--bg-page);
+    color: var(--text-primary);
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-/* Hide Streamlit chrome while retaining the app itself. */
+.block-container {
+    max-width: 1300px;
+    padding-top: 1.2rem;
+    padding-bottom: 3.5rem;
+}
+
+/* Typography */
+h1, h2, h3, h4 {
+    font-family: 'Space Grotesk', sans-serif !important;
+    color: var(--text-primary) !important;
+    letter-spacing: -0.02em;
+}
+
+p, span, label, div {
+    color: var(--text-primary);
+}
+
+/* Streamlit Native Chrome Cleanup */
 #MainMenu, footer, [data-testid="stDeployButton"] {
     visibility: hidden !important;
     display: none !important;
 }
+
 header[data-testid="stHeader"] {
     background: transparent !important;
     height: 0 !important;
 }
 
-/* Sidebar */
+/* Custom Sidebar Styling */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #090F20 0%, #0D1830 100%);
-    border-right: 1px solid var(--line);
+    background: linear-gradient(180deg, #090E1D 0%, #080D1A 100%) !important;
+    border-right: 1px solid var(--border-subtle);
 }
-[data-testid="stSidebar"] > div:first-child {
-    padding-top: 1.1rem;
+
+.sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 6px 18px 6px;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 16px;
 }
-[data-testid="stSidebar"] * {
-    color: #DCE5FA;
-}
-.brand-wrap {
-    padding: 10px 10px 17px 10px;
-}
-.brand-mark {
-    width: 42px;
-    height: 42px;
-    display: inline-flex;
+
+.brand-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--brand-gradient);
+    display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 13px;
-    background: linear-gradient(135deg, #4F8CFF, #7C5CFF);
-    box-shadow: 0 8px 24px rgba(86, 100, 255, .28);
-    font-size: 21px;
-    margin-right: 10px;
-    vertical-align: middle;
+    font-size: 22px;
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.35);
 }
-.brand-name {
-    display: inline-block;
-    vertical-align: middle;
+
+.brand-text-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 19px;
     color: #FFFFFF;
-    font: 700 19px 'Space Grotesk', sans-serif;
+    line-height: 1.2;
 }
-.brand-caption {
-    color: #8193B8;
-    font-size: 9px;
-    letter-spacing: 1.65px;
-    line-height: 1.8;
-    margin: 10px 0 0 2px;
+
+.brand-text-sub {
+    font-size: 10px;
+    font-weight: 600;
+    color: #8BA1C7;
+    letter-spacing: 0.5px;
     text-transform: uppercase;
 }
-.side-label {
-    color: #7184AA;
+
+.nav-section-label {
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 1.6px;
-    margin: 17px 0 8px 8px;
+    letter-spacing: 1.5px;
+    color: var(--text-muted);
     text-transform: uppercase;
+    margin: 16px 0 8px 8px;
 }
+
+/* Sidebar navigation buttons */
 [data-testid="stSidebar"] .stButton > button {
     background: transparent !important;
     border: 1px solid transparent !important;
-    color: #B9C7E3 !important;
+    color: var(--text-secondary) !important;
     text-align: left !important;
+    justify-content: flex-start !important;
     border-radius: 10px !important;
     min-height: 42px !important;
-    padding: 0 12px !important;
+    padding: 0 14px !important;
     font-weight: 600 !important;
-    transition: .18s ease;
-}
-[data-testid="stSidebar"] .stButton > button:hover {
-    background: rgba(93, 117, 210, .15) !important;
-    border-color: rgba(125, 143, 255, .2) !important;
-    color: #FFFFFF !important;
-}
-.side-note {
-    margin: 15px 4px 4px 4px;
-    padding: 13px;
-    background: linear-gradient(135deg, rgba(57, 86, 174, .20), rgba(100, 76, 206, .12));
-    border: 1px solid rgba(122, 139, 255, .20);
-    border-radius: 13px;
-}
-.side-note strong {
-    color: #F5F7FF;
-    font-size: 12px;
-}
-.side-note p {
-    color: #9EAFD0;
-    font-size: 11px;
-    line-height: 1.55;
-    margin: 5px 0 0 0;
+    font-size: 13.5px !important;
+    transition: all 0.2s ease !important;
 }
 
-/* Top bar and hero */
-.topline {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 14px;
-    margin: 2px 0 25px 0;
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(99, 102, 241, 0.12) !important;
+    border-color: rgba(99, 102, 241, 0.25) !important;
+    color: #FFFFFF !important;
+    transform: translateX(3px);
 }
-.eyebrow {
-    color: #8EA4D1;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.8px;
-    text-transform: uppercase;
+
+/* Sidebar Info Card */
+.sidebar-status-box {
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: rgba(16, 25, 48, 0.7);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    font-size: 11.5px;
 }
-.page-heading {
-    color: #FFFFFF;
-    font: 700 29px 'Space Grotesk', sans-serif;
-    margin: 5px 0 4px 0;
+
+.status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-emerald);
+    box-shadow: 0 0 8px var(--accent-emerald);
+    margin-right: 6px;
 }
-.page-subtitle {
-    color: #9EADCA;
-    font-size: 13px;
-    margin: 0;
-}
-.hero {
-    max-width: 880px;
-    margin: 52px auto 28px auto;
+
+/* Hero & Header Section */
+.hero-wrapper {
     text-align: center;
-    padding: 12px 20px 10px 20px;
+    max-width: 900px;
+    margin: 20px auto 35px auto;
+    padding: 10px 20px;
 }
-.hero-kicker {
+
+.hero-badge {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    color: #B7C6FF;
-    background: rgba(91, 111, 220, .13);
-    border: 1px solid rgba(130, 147, 255, .22);
+    gap: 8px;
+    padding: 6px 14px;
     border-radius: 100px;
-    padding: 6px 12px;
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.28);
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: .5px;
+    letter-spacing: 0.6px;
+    color: #A5B4FC;
+    text-transform: uppercase;
+    margin-bottom: 14px;
 }
-.hero h1 {
-    font-size: clamp(28px, 3.4vw, 43px) !important;
-    line-height: 1.16;
-    margin: 20px 0 10px 0;
-    background: linear-gradient(90deg, #FFFFFF 20%, #C9D5FF 65%, #AFA4FF);
+
+.hero-title {
+    font-size: clamp(30px, 4vw, 46px);
+    font-weight: 700;
+    line-height: 1.18;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, #FFFFFF 30%, #CAD8FF 70%, #A5B4FC 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
-.hero p {
-    color: #9EADCA;
-    font-size: 14px;
-    margin: 0;
+
+.hero-subtitle {
+    font-size: 15px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    max-width: 680px;
+    margin: 0 auto;
 }
 
-/* Composer */
-.composer-shell {
-    max-width: 850px;
-    margin: 0 auto 20px auto;
-    padding: 10px;
-    border-radius: 18px;
-    background: linear-gradient(135deg, rgba(89, 119, 220, .24), rgba(121, 90, 230, .16));
-    border: 1px solid rgba(132, 151, 255, .32);
-    box-shadow: 0 14px 40px rgba(0, 0, 0, .20);
+/* Prompt Starter Cards */
+.starter-card-box {
+    background: linear-gradient(145deg, #0E162B 0%, #0A1020 100%);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 16px;
+    height: 100%;
+    transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
-div[data-testid="stTextInput"] {
-    margin: 0 !important;
+
+.starter-card-box:hover {
+    border-color: rgba(99, 102, 241, 0.4);
+    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+    transform: translateY(-2px);
 }
-div[data-testid="stTextInput"] input {
-    min-height: 48px !important;
-    background: #111B31 !important;
-    color: #F4F7FF !important;
-    -webkit-text-fill-color: #F4F7FF !important;
-    border: 1px solid rgba(143, 162, 220, .22) !important;
-    border-radius: 11px !important;
-    padding: 10px 15px !important;
-    font-size: 14px !important;
+
+.starter-card-title {
+    font-weight: 700;
+    font-size: 13.5px;
+    color: #FFFFFF;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
-div[data-testid="stTextInput"] input::placeholder {
-    color: #8292B2 !important;
-    -webkit-text-fill-color: #8292B2 !important;
-    opacity: 1 !important;
+
+.starter-card-desc {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    line-height: 1.45;
 }
-div[data-testid="stTextInput"] input:focus {
-    border-color: #8276FF !important;
-    box-shadow: 0 0 0 3px rgba(124, 114, 255, .12) !important;
+
+/* Chat Message Styling */
+[data-testid="stChatMessage"] {
+    background: rgba(13, 20, 38, 0.85) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: 16px !important;
+    padding: 18px 20px !important;
+    margin-bottom: 16px !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
 }
-.stButton > button, .stFormSubmitButton > button {
-    background: linear-gradient(110deg, #4F73F5, #805BEE) !important;
-    color: white !important;
-    border: 1px solid rgba(177, 185, 255, .24) !important;
-    border-radius: 11px !important;
-    min-height: 43px !important;
+
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    background: rgba(20, 31, 60, 0.85) !important;
+    border-color: rgba(99, 102, 241, 0.22) !important;
+}
+
+/* Source Citation Accordions */
+.source-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.28);
+    font-size: 11px;
+    font-weight: 600;
+    color: #C7D2FE;
+    margin-right: 6px;
+    margin-top: 6px;
+}
+
+.source-snippet {
+    background: #090E1D;
+    border-left: 3px solid var(--brand-primary);
+    padding: 10px 14px;
+    margin-top: 8px;
+    border-radius: 0 8px 8px 0;
+    font-size: 12px;
+    color: #CBD5E1;
+    line-height: 1.55;
+}
+
+/* Metric Cards */
+[data-testid="stMetric"] {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 18px;
+    box-shadow: var(--card-glow);
+}
+
+[data-testid="stMetricLabel"] {
+    font-size: 12px !important;
+    color: var(--text-secondary) !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+[data-testid="stMetricValue"] {
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-size: 26px !important;
     font-weight: 700 !important;
-    transition: .18s ease;
+    color: #FFFFFF !important;
 }
-.stButton > button:hover, .stFormSubmitButton > button:hover {
-    filter: brightness(1.12);
-    border-color: rgba(208, 213, 255, .6) !important;
+
+/* Buttons */
+.stButton > button {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    transition: all 0.2s ease !important;
+}
+
+/* Primary Action Buttons */
+.primary-btn button {
+    background: var(--brand-gradient) !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.35) !important;
+}
+
+.primary-btn button:hover {
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.55) !important;
     transform: translateY(-1px);
 }
 
-/* Tool links */
-.tools-heading {
-    max-width: 850px;
-    margin: 25px auto 10px auto;
-    color: #8294B8;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-}
-.tools-frame {
-    max-width: 850px;
-    margin: 0 auto;
-}
-.tools {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: clamp(13px, 3vw, 30px);
-    flex-wrap: wrap;
-    padding: 8px 0 16px 0;
-}
-.tool {
-    width: 74px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 7px;
-    text-decoration: none;
-    transition: transform .18s ease;
-}
-.tool:hover { transform: translateY(-4px); }
-.tool-icon {
-    width: 48px;
-    height: 48px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 15px;
-    background: #142344;
-    border: 1px solid rgba(142, 164, 235, .24);
-    box-shadow: 0 7px 18px rgba(0,0,0,.18);
-    overflow: hidden;
-}
-.tool-icon img {
-    width: 27px;
-    height: 27px;
-    object-fit: contain;
-    border-radius: 6px;
-}
-.tool-name {
-    color: #B9C7E3;
-    font-size: 10px;
-    font-weight: 600;
-}
-.tool:hover .tool-name { color: #FFFFFF; }
-
-/* Prompt cards */
-.prompt-label {
-    max-width: 850px;
-    margin: 26px auto 10px auto;
-    color: #8294B8;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-}
-div[data-testid="stHorizontalBlock"]:has(.prompt-card) {
-    gap: 12px;
-}
-.prompt-card {
-    min-height: 104px;
-    padding: 14px;
-    background: linear-gradient(145deg, rgba(21, 34, 62, .95), rgba(14, 24, 44, .95));
-    border: 1px solid var(--line);
-    border-radius: 13px;
-}
-.prompt-card b {
-    color: #F2F5FF;
-    font-size: 12px;
-}
-.prompt-card p {
-    color: #91A2C3;
-    font-size: 11px;
-    margin: 7px 0 0 0;
-    line-height: 1.5;
-}
-
-/* Messages and general cards */
-[data-testid="stChatMessage"] {
-    background: rgba(18, 30, 55, .92) !important;
-    border: 1px solid var(--line) !important;
-    border-radius: 15px !important;
-    padding: 16px !important;
-    margin: 12px 0 !important;
-}
-[data-testid="stChatMessage"] p,
-[data-testid="stChatMessage"] li,
-[data-testid="stChatMessage"] strong,
-[data-testid="stChatMessage"] h1,
-[data-testid="stChatMessage"] h2,
-[data-testid="stChatMessage"] h3 {
-    color: #F1F5FF !important;
-}
-[data-testid="stChatMessage"] a { color: #A9B8FF !important; }
-[data-testid="stMetric"] {
-    background: #111C33;
-    border: 1px solid var(--line);
-    border-radius: 13px;
-    padding: 14px;
-}
-[data-testid="stMetricLabel"], [data-testid="stMetricValue"] {
-    color: #F4F7FF !important;
-}
+/* Containers with border */
 div[data-testid="stVerticalBlockBorderWrapper"] {
-    background: rgba(16, 28, 51, .72);
-    border-color: var(--line) !important;
-    border-radius: 14px !important;
+    background: rgba(13, 20, 38, 0.65);
+    border-color: var(--border-subtle) !important;
+    border-radius: 16px !important;
+    padding: 6px;
 }
-[data-testid="stCaptionContainer"] { color: #8FA0C0 !important; }
+
+/* Expander custom styling */
+.streamlit-expanderHeader {
+    background: rgba(16, 25, 48, 0.6) !important;
+    border-radius: 10px !important;
+    font-size: 12.5px !important;
+    font-weight: 600 !important;
+    color: #CAD8FF !important;
+}
+
+/* Chat Input Bar Fix */
+[data-testid="stChatInput"] {
+    border-radius: 14px !important;
+    border: 1px solid rgba(99, 102, 241, 0.3) !important;
+    background: #0E162B !important;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4) !important;
+}
+
+[data-testid="stChatInput"]:focus-within {
+    border-color: #6366F1 !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
+
 # =========================================================
-# 4. HELPERS
+# 4. APPLICATION HELPERS
 # =========================================================
-def start_new_chat():
-    if st.session_state.messages:
-        first_user_message = next(
-            (m["content"] for m in st.session_state.messages if m["role"] == "user"),
-            "New conversation",
-        )
-        st.session_state.conversation_history.insert(0, first_user_message[:55])
-        st.session_state.conversation_history = st.session_state.conversation_history[:8]
-    st.session_state.messages = []
-    st.session_state.pending_question = None
-    st.session_state.chat_input_value = ""
-    st.session_state.page = "AI Assistant"
-
-
-def submit_question():
-    typed = st.session_state.get("chat_input_value", "").strip()
-    if typed:
-        st.session_state.pending_question = typed
-    st.session_state.chat_input_value = ""
-
-
-def process_pending_question():
-    question = st.session_state.pending_question
-    if not question:
+def handle_user_query(question: str):
+    """Processes a user question, stores query telemetry, and renders the result."""
+    q = question.strip()
+    if not q:
         return
-    st.session_state.pending_question = None
-    st.session_state.messages.append({"role": "user", "content": question})
-    try:
-        with st.spinner("Searching MIST college documents..."):
-            answer = get_answer(question)
-    except Exception as error:
-        print("Chatbot error:", error)
-        answer = "Sorry, I couldn't process your question right now. Please try again."
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    # Append user question
+    st.session_state.messages.append({
+        "role": "user",
+        "content": q,
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+    })
+
+    # Save to history
+    if q not in st.session_state.conversation_history:
+        st.session_state.conversation_history.insert(0, q)
+        st.session_state.conversation_history = st.session_state.conversation_history[:10]
+
+    # Generate assistant answer
+    with st.spinner("Retrieving official college documents & formulating answer..."):
+        result = get_answer_detailed(
+            question=q,
+            model_name=st.session_state.selected_model,
+            top_k=st.session_state.top_k,
+            temperature=st.session_state.temperature,
+        )
+
+    # Store message
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": result["answer"],
+        "sources": result.get("sources", []),
+        "latency": result.get("latency_seconds", 0.0),
+        "model": result.get("model_used", st.session_state.selected_model),
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "success": result.get("success", True),
+    })
+
+    # Store telemetry for analytics
+    st.session_state.query_analytics.append({
+        "query": q,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "latency": result.get("latency_seconds", 0.0),
+        "sources_count": len(result.get("sources", [])),
+        "model": result.get("model_used", st.session_state.selected_model),
+        "status": "Success" if result.get("success", True) else "Failed",
+    })
 
 
-def ask_from_card(prompt):
-    st.session_state.pending_question = prompt
+def reset_conversation():
+    """Clears the chat messages and starts a fresh conversation."""
+    st.session_state.messages = []
     st.session_state.page = "AI Assistant"
 
 
 # =========================================================
-# 5. SIDEBAR WORKSPACE
+# 5. SIDEBAR NAVIGATION & CONTROLS
 # =========================================================
 with st.sidebar:
-    st.markdown("""
-    <div class="brand-wrap">
-      <span class="brand-mark">🎓</span><span class="brand-name">MIST Connect</span>
-      <div class="brand-caption">Mother Teresa Institute of Science & Technology</div>
+    # Brand Header
+    st.markdown(f"""
+    <div class="sidebar-brand">
+      <div class="brand-icon">🎓</div>
+      <div>
+        <div class="brand-text-title">{config.COLLEGE_SHORT_NAME} Connect</div>
+        <div class="brand-text-sub">Campus AI Assistant</div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="side-label">Workspace</div>', unsafe_allow_html=True)
-    nav_items = [
-        ("✦", "AI Assistant"),
-        ("▦", "Dashboard"),
-        ("▤", "Documents"),
-        ("◷", "Analytics"),
-        ("⬡", "Knowledge Base"),
-        ("⚙", "Settings"),
+    # Navigation Menu
+    st.markdown('<div class="nav-section-label">Navigation</div>', unsafe_allow_html=True)
+    nav_tabs = [
+        ("💬", "AI Assistant"),
+        ("📊", "College Dashboard"),
+        ("📁", "Document Vault"),
+        ("🔍", "Semantic Search Lab"),
+        ("📈", "Usage Analytics"),
+        ("⚙️", "Settings & Health"),
     ]
-    for symbol, label in nav_items:
-        if st.button(f"{symbol}   {label}", key=f"nav_{label}", use_container_width=True):
-            st.session_state.page = label
+
+    for icon, tab_name in nav_tabs:
+        is_active = st.session_state.page == tab_name
+        label_text = f"{icon}  {tab_name}"
+        if st.button(label_text, key=f"nav_{tab_name}", use_container_width=True):
+            st.session_state.page = tab_name
             st.rerun()
 
-    st.markdown('<div class="side-label">Recent conversations</div>', unsafe_allow_html=True)
+    # Conversation Management
+    st.markdown('<div class="nav-section-label">Session Controls</div>', unsafe_allow_html=True)
+    col_new, col_exp = st.columns(2)
+    with col_new:
+        if st.button("＋ New Chat", key="btn_new_chat", use_container_width=True):
+            reset_conversation()
+            st.rerun()
+    with col_exp:
+        # Export chat as markdown
+        if st.session_state.messages:
+            transcript = f"# MIST Connect AI - Conversation Log\n\n*Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n"
+            for m in st.session_state.messages:
+                role = "Student" if m["role"] == "user" else "MIST AI Assistant"
+                transcript += f"### {role} ({m.get('timestamp', '')}):\n{m['content']}\n\n"
+            st.download_button(
+                "📥 Export",
+                data=transcript,
+                file_name=f"MIST_Chat_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        else:
+            st.button("📥 Export", disabled=True, use_container_width=True)
+
+    # Recent queries in sidebar
     if st.session_state.conversation_history:
-        for idx, item in enumerate(st.session_state.conversation_history[:6]):
-            st.caption(f"◦  {item}")
-    else:
-        st.caption("Your recent questions will appear here.")
+        st.markdown('<div class="nav-section-label">Recent Questions</div>', unsafe_allow_html=True)
+        for h_idx, h_query in enumerate(st.session_state.conversation_history[:5]):
+            short_q = h_query[:32] + ("..." if len(h_query) > 32 else "")
+            if st.button(f"◦ {short_q}", key=f"history_{h_idx}", use_container_width=True):
+                st.session_state.page = "AI Assistant"
+                handle_user_query(h_query)
+                st.rerun()
 
-    st.markdown("""
-    <div class="side-note">
-      <strong>✦ MIST AI Assistant</strong>
-      <p>Ask questions about college services and get answers from the connected knowledge base.</p>
+    # System Status & Quick Contact Card
+    st.markdown('<div class="nav-section-label">Campus Helpdesk</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="sidebar-status-box">
+      <div><span class="status-dot"></span><strong>System Status: Active</strong></div>
+      <div style="color: #8BA1C7; margin-top: 6px; font-size: 11px;">
+        • <strong>Model:</strong> {st.session_state.selected_model.split('/')[-1]}<br>
+        • <strong>Docs:</strong> 6 PDFs Indexed<br>
+        • <strong>Vector DB:</strong> ChromaDB (Ready)
+      </div>
+      <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(135,156,225,0.12); font-size: 10.5px; color: #7E93B8;">
+        📞 {config.COLLEGE_PHONE}<br>
+        ✉️ {config.COLLEGE_EMAIL}<br>
+        🌐 <a href="{config.COLLEGE_WEBSITE}" target="_blank" style="color: #A5B4FC;">mist.edu.in</a>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.write("")
-    if st.button("＋   New conversation", key="sidebar_new_chat", use_container_width=True):
-        start_new_chat()
-        st.rerun()
-    st.markdown("""
-    <div style="padding:12px 8px 4px 8px;color:#7487AC;font-size:10px;line-height:1.8;">
-      <span style="color:#61D6A3;">●</span> SYSTEM READY<br>
-      RETRIEVAL AUGMENTED GENERATION<br>
-      MIST COLLEGE · VERSION 2.0
-    </div>
-    """, unsafe_allow_html=True)
 
 # =========================================================
-# 6. AI ASSISTANT
+# 6. VIEW: AI ASSISTANT
 # =========================================================
 if st.session_state.page == "AI Assistant":
-    if st.session_state.messages:
-        # Conversation header
-        left, right = st.columns([5, 1])
-        with left:
-            st.markdown("""
-            <div class="eyebrow">MIST · STUDENT SUPPORT</div>
-            <div class="page-heading">AI College Assistant</div>
-            <p class="page-subtitle">Your campus information, one question away.</p>
-            """, unsafe_allow_html=True)
-        with right:
-            if st.button("＋ New Chat", use_container_width=True, key="top_new_chat"):
-                start_new_chat()
-                st.rerun()
-
-        for message in st.session_state.messages:
-            avatar = "🎓" if message["role"] == "assistant" else "👤"
-            with st.chat_message(message["role"], avatar=avatar):
-                st.markdown(message["content"])
-
-        st.markdown('<div class="composer-shell">', unsafe_allow_html=True)
-        with st.form("mist_chat_form", clear_on_submit=True):
-            input_col, send_col = st.columns([8, 1])
-            with input_col:
-                st.text_input(
-                    "Ask MIST AI",
-                    placeholder="Message MIST AI… Ask about admissions, fees, attendance, exams",
-                    key="chat_input_value",
-                    label_visibility="collapsed",
-                )
-            with send_col:
-                submitted = st.form_submit_button("➤", use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-        if submitted:
-            typed = st.session_state.chat_input_value.strip()
-            if typed:
-                st.session_state.pending_question = typed
-                process_pending_question()
-                st.rerun()
-    else:
-        # Landing page inspired by a modern AI workspace.
-        st.markdown("""
-        <div class="topline">
-          <div>
-            <div class="eyebrow">MOTHER TERESA INSTITUTE OF SCIENCE & TECHNOLOGY</div>
-            <div class="page-heading">MIST College Chatbot</div>
-            <p class="page-subtitle">Your intelligent campus information assistant.</p>
+    # Header bar
+    head_left, head_right = st.columns([4, 1.2])
+    with head_left:
+        st.markdown(f"""
+        <div style="margin-bottom: 8px;">
+          <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
+            {config.COLLEGE_SHORT_NAME} · OFFICIAL FAQ & ADMISSIONS DESK
           </div>
-          <div class="hero-kicker">● RAG ASSISTANT ONLINE</div>
+          <h2 style="margin: 4px 0; font-size: 26px;">CampusConnect AI Assistant</h2>
+          <div style="font-size: 13px; color: #94A3B8;">
+            Direct answers verified against official {config.COLLEGE_SHORT_NAME} regulations, fees, and syllabus documents.
+          </div>
         </div>
-        <div class="hero">
-          <div class="hero-kicker">✦ YOUR MIST AI WORKSPACE</div>
-          <h1>Welcome to your campus assistant 👋</h1>
-          <p>What would you like to know about your college today?</p>
+        """, unsafe_allow_html=True)
+    with head_right:
+        st.markdown(f"""
+        <div style="text-align: right; margin-top: 8px;">
+          <span class="hero-badge">● MODEL: {st.session_state.selected_model.split('/')[-1]}</span>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown('<div class="composer-shell">', unsafe_allow_html=True)
-        with st.form("mist_first_chat_form", clear_on_submit=True):
-            input_col, send_col = st.columns([8, 1])
-            with input_col:
-                st.text_input(
-                    "Ask MIST AI",
-                    placeholder="Message MIST AI… Ask about admissions, fees, attendance, exams",
-                    key="chat_input_value",
-                    label_visibility="collapsed",
-                )
-            with send_col:
-                submitted = st.form_submit_button("➤", use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-        if submitted:
-            typed = st.session_state.chat_input_value.strip()
-            if typed:
-                st.session_state.pending_question = typed
-                process_pending_question()
-                st.rerun()
-
-        st.markdown('<div class="tools-heading">Explore AI tools for students</div>', unsafe_allow_html=True)
-        components.html("""
-        <div class="tools-frame">
-          <div class="tools">
-            <a class="tool" href="https://www.perplexity.ai/" target="_blank" rel="noopener noreferrer">
-              <div class="tool-icon"><img src="https://cdn.simpleicons.org/perplexity/FFFFFF" alt="Perplexity"></div>
-              <span class="tool-name">Perplexity</span>
-            </a>
-            <a class="tool" href="https://claude.ai/" target="_blank" rel="noopener noreferrer">
-              <div class="tool-icon"><img src="https://cdn.simpleicons.org/claude/FFFFFF" alt="Claude"></div>
-              <span class="tool-name">Claude</span>
-            </a>
-            <a class="tool" href="https://copilot.microsoft.com/" target="_blank" rel="noopener noreferrer">
-              <div class="tool-icon"><img src="https://cdn.simpleicons.org/microsoftcopilot/FFFFFF" alt="Copilot"></div>
-              <span class="tool-name">Copilot</span>
-            </a>
-            <a class="tool" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">
-              <div class="tool-icon"><img src="https://cdn.simpleicons.org/openai/FFFFFF" alt="ChatGPT"></div>
-              <span class="tool-name">ChatGPT</span>
-            </a>
-            <a class="tool" href="https://gemini.google.com/" target="_blank" rel="noopener noreferrer">
-              <div class="tool-icon"><img src="https://cdn.simpleicons.org/googlegemini/FFFFFF" alt="Gemini"></div>
-              <span class="tool-name">Gemini</span>
-            </a>
-          </div>
+    # Empty State: Welcome Banner & Topic Starter Cards
+    if not st.session_state.messages:
+        st.markdown(f"""
+        <div class="hero-wrapper">
+          <div class="hero-badge">✦ OFFICIAL CAMPUS INTELLIGENCE PLATFORM</div>
+          <div class="hero-title">Welcome to MIST Student Assistant 👋</div>
+          <p class="hero-subtitle">
+            Ask any question regarding admissions, fee structure, semester attendance, autonomous exam rules, or academic departments.
+          </p>
         </div>
-        """, height=94, scrolling=False)
+        """, unsafe_allow_html=True)
 
-        st.markdown('<div class="prompt-label">Or start with a popular question</div>', unsafe_allow_html=True)
-        prompts = [
-            ("🎓", "Admissions & eligibility", "How do I apply for admission at MIST?"),
-            ("💳", "Fees & payments", "What fee information is available for MIST?"),
-            ("📅", "Attendance rules", "What are the attendance requirements?"),
-            ("📝", "Exams & regulations", "What examination information is available?"),
+        st.markdown('<div style="font-size: 11px; font-weight: 700; color: #8BA1C7; letter-spacing: 1.2px; text-transform: uppercase; margin-bottom: 12px;">Frequently Explored Topics</div>', unsafe_allow_html=True)
+
+        starter_prompts = [
+            ("💳", "Fee Structure", "What fee amounts are published for B.Tech, M.Tech, MBA, and Diploma?", "Tuition & program fees"),
+            ("🎓", "Admissions & Entry", "How do I apply for B.Tech admission at MIST and what is the entrance rank requirement?", "EAMCET, counselling & eligibility"),
+            ("📅", "Attendance Rules", "What are the attendance regulations, condonation rules, and semester timeline under M24?", "Minimum attendance & condonation"),
+            ("📝", "Exam Regulations", "What examination regulations, CIE, and SEE rules apply to students at MIST?", "Evaluation, hall tickets & results"),
+            ("🏛️", "Departments & Labs", "What academic departments and specialisations are available at MIST?", "CSE, AI&ML, ECE, EEE, Mech, Civil"),
+            ("📍", "College Profile", "Where is MIST located and what accreditations does the institution hold?", "NAAC A+, autonomous status & campus"),
         ]
-        cols = st.columns(4)
-        for idx, (emoji, title, prompt) in enumerate(prompts):
-            with cols[idx]:
-                st.markdown(
-                    f'<div class="prompt-card"><b>{emoji} {title}</b>'
-                    f'<p>Get information from the college knowledge base.</p></div>',
-                    unsafe_allow_html=True,
-                )
-                if st.button("Explore →", key=f"prompt_{idx}", use_container_width=True):
-                    ask_from_card(prompt)
-                    process_pending_question()
+
+        c_rows = [st.columns(3), st.columns(3)]
+        for idx, (emoji, title, query, desc) in enumerate(starter_prompts):
+            row_idx = 0 if idx < 3 else 1
+            col_target = c_rows[row_idx][idx % 3]
+            with col_target:
+                st.markdown(f"""
+                <div class="starter-card-box">
+                  <div class="starter-card-title">{emoji} {title}</div>
+                  <div class="starter-card-desc">{desc}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button("Ask Assistant →", key=f"starter_btn_{idx}", use_container_width=True):
+                    handle_user_query(query)
                     st.rerun()
 
+    # Active Conversation Display
+    else:
+        for idx, msg in enumerate(st.session_state.messages):
+            avatar = "👤" if msg["role"] == "user" else "🎓"
+            with st.chat_message(msg["role"], avatar=avatar):
+                st.markdown(msg["content"])
+
+                # Render sources and citations for assistant messages
+                if msg["role"] == "assistant" and msg.get("sources"):
+                    sources = msg["sources"]
+                    with st.expander(f"📚 Verified Sources & References ({len(sources)} documents)", expanded=False):
+                        for s_idx, src in enumerate(sources):
+                            st.markdown(
+                                f"<span class='source-pill'>📄 <strong>{src['source']}</strong> · Page {src['page']}</span>",
+                                unsafe_allow_html=True,
+                            )
+                            st.markdown(f"<div class='source-snippet'>\"{src['snippet']}\"</div>", unsafe_allow_html=True)
+                            if src.get("urls"):
+                                for u in src["urls"]:
+                                    st.markdown(f"🔗 [Official Portal Link]({u})")
+
+                    # Metadata badge & Action tools
+                    col_meta, col_actions = st.columns([3, 1])
+                    with col_meta:
+                        st.caption(f"⚡ Latency: {msg.get('latency', 0.0)}s · Engine: {msg.get('model', 'Groq LPU')} · {msg.get('timestamp', '')}")
+                    with col_actions:
+                        f_col1, f_col2 = st.columns(2)
+                        with f_col1:
+                            if st.button("👍", key=f"like_{idx}", help="Helpful answer"):
+                                st.session_state.feedback_store[idx] = "like"
+                                st.toast("Thank you for your feedback!", icon="✨")
+                        with f_col2:
+                            if st.button("👎", key=f"dislike_{idx}", help="Needs improvement"):
+                                st.session_state.feedback_store[idx] = "dislike"
+                                st.toast("Feedback noted. We will refine document citations.", icon="📝")
+
+    # Bottom Chat Input Bar (Native, fluid, auto-clearing, Enter-friendly)
+    user_input = st.chat_input("Ask MIST AI… e.g., 'What are the attendance requirements?' or 'What is B.Tech fee?'")
+    if user_input:
+        handle_user_query(user_input)
+        st.rerun()
+
+
 # =========================================================
-# 7. DASHBOARD
+# 7. VIEW: COLLEGE DASHBOARD
 # =========================================================
-elif st.session_state.page == "Dashboard":
-    st.markdown("""
-    <div class="eyebrow">MIST · OVERVIEW</div>
-    <div class="page-heading">College Dashboard</div>
-    <p class="page-subtitle">A quick overview of your college information assistant.</p>
+elif st.session_state.page == "College Dashboard":
+    st.markdown(f"""
+    <div style="margin-bottom: 20px;">
+      <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
+        {config.COLLEGE_SHORT_NAME} · INSTITUTION OVERVIEW
+      </div>
+      <h2 style="margin: 4px 0 6px 0;">College Operations Dashboard</h2>
+      <p style="color: #94A3B8; font-size: 14px; margin: 0;">
+        Real-time telemetry of indexed knowledge assets, autonomous regulation details, and fast inquiry cards.
+      </p>
+    </div>
     """, unsafe_allow_html=True)
 
-    pdf_count = len(list(DOCUMENTS_DIR.glob("*.pdf"))) if DOCUMENTS_DIR.exists() else 0
-    question_count = sum(1 for m in st.session_state.messages if m["role"] == "user")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Knowledge documents", pdf_count, "PDF files")
-    c2.metric("Questions this session", question_count, "Student queries")
-    c3.metric("Assistant status", "Online", "Ready")
+    # Health check metrics
+    health = check_system_health()
 
-    st.markdown('<div class="prompt-label">Student services</div>', unsafe_allow_html=True)
-    services = [
-        ("🎓", "Admissions", "Admission process and eligibility.", "Explain the MIST admission process and eligibility."),
-        ("💳", "Fee structure", "Tuition and fee information.", "What fee information is available for MIST?"),
-        ("📅", "Attendance", "Attendance rules and requirements.", "What are the attendance requirements?"),
-        ("📝", "Examinations", "Exam information and regulations.", "What examination information is available?"),
-        ("📚", "Departments", "Courses and department information.", "What departments and courses are available at MIST?"),
-        ("🏆", "Scholarships", "Scholarship information in the documents.", "What scholarship information is available in the MIST documents?"),
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Indexed Documents", health.get("pdf_document_count", 0), "PDF Files")
+    m2.metric("Knowledge Chunks", health.get("chunks_indexed", 0), "ChromaDB Vectors")
+    m3.metric("LLM Response Engine", "Groq LPU", "High-speed Inference")
+    m4.metric("Accreditation", "NAAC A+", "Autonomous · JNTUH")
+
+    st.write("")
+
+    # College Profile Overview Card
+    with st.container(border=True):
+        st.markdown(f"### 🏛️ {config.COLLEGE_NAME}")
+        st.markdown(f"""
+        - **Established:** {config.COLLEGE_ESTD}
+        - **Status & Recognition:** {config.COLLEGE_ACCREDITATION}
+        - **Campus Location:** {config.COLLEGE_LOCATION}
+        - **Admissions Helpline:** `{config.COLLEGE_PHONE}` | **Email:** `{config.COLLEGE_EMAIL}`
+        - **Official Website:** [{config.COLLEGE_WEBSITE}]({config.COLLEGE_WEBSITE})
+        """)
+
+    st.write("")
+    st.markdown("### 🎓 Core Academic Portals & Quick Questions")
+
+    portal_cards = [
+        ("💳", "Published Fee Structure", "Official fee schedule for B.Tech, M.Tech, MBA, and Diploma.", "What fee structure is published for MIST?"),
+        ("📋", "Admissions & Entry Procedure", "Admission paths via Telangana EAMCET and university approval.", "Explain the MIST admission process and eligibility."),
+        ("⏱️", "M24 Academic Regulations", "4-year B.Tech program structure, 160 degree credits, and 22-week semesters.", "What are the attendance requirements and regulations under M24?"),
+        ("📝", "Examinations & Grading", "Autonomous CIE (internal) and SEE (semester end) exams and syllabus.", "What examination information is available for MIST students?"),
+        ("🔬", "Departments & Laboratories", "CSE (AI&ML, Data Science), ECE, EEE, Mechanical, and Civil Engineering.", "What academic departments and specialisations exist at MIST?"),
+        ("📍", "Campus Facilities", "Computer centre, digital library, communication labs, and e-classrooms.", "What campus facilities and infrastructure are described for MIST?"),
     ]
-    cols = st.columns(3)
-    for idx, (emoji, title, desc, prompt) in enumerate(services):
-        with cols[idx % 3]:
+
+    p_cols = st.columns(3)
+    for idx, (emoji, title, desc, prompt) in enumerate(portal_cards):
+        with p_cols[idx % 3]:
             with st.container(border=True):
-                st.markdown(f"### {emoji} {title}")
+                st.markdown(f"#### {emoji} {title}")
                 st.caption(desc)
-                if st.button("Ask assistant →", key=f"service_{idx}", use_container_width=True):
+                if st.button("Ask Assistant →", key=f"dash_portal_{idx}", use_container_width=True):
                     st.session_state.page = "AI Assistant"
-                    ask_from_card(prompt)
-                    process_pending_question()
+                    handle_user_query(prompt)
                     st.rerun()
 
-# =========================================================
-# 8. DOCUMENTS
-# =========================================================
-elif st.session_state.page == "Documents":
-    st.markdown('<div class="eyebrow">MIST · KNOWLEDGE LIBRARY</div><div class="page-heading">College Documents</div>', unsafe_allow_html=True)
-    st.caption("PDF files currently present in your local documents folder.")
-    if DOCUMENTS_DIR.exists():
-        pdf_files = sorted(DOCUMENTS_DIR.glob("*.pdf"))
-        st.metric("Available PDF documents", len(pdf_files))
-        if not pdf_files:
-            st.info("No PDF documents were found in the documents folder.")
-        for pdf in pdf_files:
-            with st.container(border=True):
-                file_col, type_col = st.columns([5, 1])
-                with file_col:
-                    st.markdown(f"**📄 {pdf.name}**")
-                    st.caption("Stored in the MIST chatbot document library")
-                with type_col:
-                    st.caption("PDF")
-    else:
-        st.warning("The documents folder was not found.")
 
 # =========================================================
-# 9. ANALYTICS
+# 8. VIEW: DOCUMENT VAULT & INGESTION
 # =========================================================
-elif st.session_state.page == "Analytics":
-    st.markdown('<div class="eyebrow">MIST · USAGE</div><div class="page-heading">Chat Analytics</div>', unsafe_allow_html=True)
-    total = len(st.session_state.messages)
-    user_total = sum(1 for m in st.session_state.messages if m["role"] == "user")
-    assistant_total = sum(1 for m in st.session_state.messages if m["role"] == "assistant")
-    a, b, c = st.columns(3)
-    a.metric("Total messages", total)
-    b.metric("Student questions", user_total)
-    c.metric("AI responses", assistant_total)
-    st.info("These statistics cover the current browser session only and reset when the session is cleared.")
+elif st.session_state.page == "Document Vault":
+    st.markdown("""
+    <div style="margin-bottom: 20px;">
+      <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
+        MIST · KNOWLEDGE REPOSITORY
+      </div>
+      <h2 style="margin: 4px 0 6px 0;">Document Vault & Vector Ingestion</h2>
+      <p style="color: #94A3B8; font-size: 14px; margin: 0;">
+        Manage official PDFs, upload updated circulars, and rebuild the vector database in one click.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-# =========================================================
-# 10. KNOWLEDGE BASE
-# =========================================================
-elif st.session_state.page == "Knowledge Base":
-    st.markdown('<div class="eyebrow">MIST · RETRIEVAL SYSTEM</div><div class="page-heading">RAG Knowledge Base</div>', unsafe_allow_html=True)
-    st.write("The chatbot retrieves relevant text from the PDFs indexed in your Chroma vector database.")
-    tech = [
-        ("Interface", "Streamlit"),
-        ("Orchestration", "LangChain"),
-        ("Vector database", "ChromaDB"),
-        ("Embeddings", "Hugging Face"),
-        ("Language model", "Groq (configured in rag_pipeline.py)"),
-        ("Source format", "PDF documents"),
-    ]
-    for label, value in tech:
+    action_left, action_right = st.columns([2, 1])
+
+    with action_left:
         with st.container(border=True):
-            l, r = st.columns([1, 3])
-            l.caption(label)
-            r.markdown(f"**{value}**")
-    st.success("Connected through your existing rag_pipeline.py. This UI update does not modify your vector database.")
+            st.markdown("### 📤 Upload New College Document")
+            st.caption("Upload official brochures, exam circulars, syllabus PDFs, or fee notifications.")
+            uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"], key="pdf_uploader")
+            if uploaded_file is not None:
+                save_dest = config.DOCUMENTS_DIR / uploaded_file.name
+                if st.button(f"Save '{uploaded_file.name}' to Vault", key="save_uploaded_doc", type="primary"):
+                    with open(save_dest, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    st.success(f"File '{uploaded_file.name}' successfully saved! Click 'Rebuild Vector Index' to index it.")
+                    st.rerun()
+
+    with action_right:
+        with st.container(border=True):
+            st.markdown("### ⚡ Re-index Knowledge Base")
+            st.caption("Process all PDFs into text chunks and recompute vector embeddings.")
+            if st.button("Rebuild Vector Index 🔄", key="btn_reindex_now", use_container_width=True, type="primary"):
+                progress_bar = st.progress(0, text="Initializing ingestion...")
+                status_text = st.empty()
+
+                def update_prog(msg: str, pct: float):
+                    progress_bar.progress(int(pct * 100), text=msg)
+
+                result = build_vector_database(progress_callback=update_prog)
+
+                if result["success"]:
+                    reload_vectorstore()
+                    status_text.success(f"✅ Success! Indexed {result['documents_count']} documents into {result['chunks_count']} chunks in {result['elapsed_seconds']}s.")
+                else:
+                    status_text.error(f"❌ Error: {result.get('error')}")
+
+    st.write("")
+    st.markdown("### 📄 Documents Currently Indexed in Vault")
+
+    pdf_files = sorted(list(config.DOCUMENTS_DIR.glob("*.pdf")))
+    if not pdf_files:
+        st.warning("No PDF documents found in the documents folder.")
+    else:
+        st.caption(f"Showing {len(pdf_files)} PDF knowledge documents.")
+        for pdf_path in pdf_files:
+            file_size_kb = round(pdf_path.stat().st_size / 1024, 1)
+            modified_time = datetime.fromtimestamp(pdf_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+
+            with st.container(border=True):
+                col_info, col_btn = st.columns([4, 1.2])
+                with col_info:
+                    st.markdown(f"**📄 {pdf_path.name}**")
+                    st.caption(f"Size: {file_size_kb} KB · Last modified: {modified_time} · Path: `{pdf_path.name}`")
+                with col_btn:
+                    with st.popover("Preview Content 👁️", use_container_width=True):
+                        st.markdown(f"**Document Preview: {pdf_path.name}**")
+                        try:
+                            reader = PdfReader(str(pdf_path))
+                            total_pages = len(reader.pages)
+                            st.caption(f"Total Pages: {total_pages}")
+                            page_text = reader.pages[0].extract_text()
+                            st.text_area("Page 1 Content", page_text, height=260)
+                        except Exception as e:
+                            st.error(f"Could not extract preview: {e}")
+
 
 # =========================================================
-# 11. SETTINGS
+# 9. VIEW: SEMANTIC SEARCH LAB
 # =========================================================
-elif st.session_state.page == "Settings":
-    st.markdown('<div class="eyebrow">MIST · APPLICATION</div><div class="page-heading">Settings & About</div>', unsafe_allow_html=True)
+elif st.session_state.page == "Semantic Search Lab":
+    st.markdown("""
+    <div style="margin-bottom: 20px;">
+      <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
+        RAG DIAGNOSTICS · VECTOR EMBEDDINGS
+      </div>
+      <h2 style="margin: 4px 0 6px 0;">Semantic Vector Search Playground</h2>
+      <p style="color: #94A3B8; font-size: 14px; margin: 0;">
+        Directly test semantic similarity retrieval against ChromaDB without triggering the LLM generation step.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_q, col_k = st.columns([4, 1])
+    with col_q:
+        search_query = st.text_input(
+            "Enter semantic search test query",
+            placeholder="e.g. condonation percentage, tuition fee, entrance rank, intake capacity...",
+            key="semantic_test_input",
+        )
+    with col_k:
+        k_val = st.number_input("Top K Chunks", min_value=1, max_value=8, value=4, key="semantic_k")
+
+    if search_query:
+        with st.spinner("Searching vector index..."):
+            matches = search_knowledge_base(search_query, top_k=int(k_val))
+
+        if not matches:
+            st.info("No matching chunks found in the vector database.")
+        else:
+            st.success(f"Found {len(matches)} relevant chunks for query: **'{search_query}'**")
+            for idx, match in enumerate(matches):
+                with st.container(border=True):
+                    sc_col, doc_col = st.columns([1.5, 4])
+                    with sc_col:
+                        score_display = match.get("score")
+                        if score_display is not None:
+                            st.metric("Similarity Score", f"{score_display:.3f}")
+                        else:
+                            st.caption("Relevance Match")
+                    with doc_col:
+                        st.markdown(f"**Source Document:** `{match['source']}` (Page {match['page']})")
+                        st.markdown(f"<div class='source-snippet'>{match['content']}</div>", unsafe_allow_html=True)
+                        if match.get("urls"):
+                            st.caption(f"Detected links: {', '.join(match['urls'])}")
+
+
+# =========================================================
+# 10. VIEW: USAGE ANALYTICS
+# =========================================================
+elif st.session_state.page == "Usage Analytics":
+    st.markdown("""
+    <div style="margin-bottom: 20px;">
+      <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
+        MIST · TELEMETRY
+      </div>
+      <h2 style="margin: 4px 0 6px 0;">Chat & Query Analytics</h2>
+      <p style="color: #94A3B8; font-size: 14px; margin: 0;">
+        Monitor student inquiry activity, average latency, and retrieved sources per query.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    total_msgs = len(st.session_state.messages)
+    student_q = sum(1 for m in st.session_state.messages if m["role"] == "user")
+    ai_resp = sum(1 for m in st.session_state.messages if m["role"] == "assistant")
+
+    latencies = [m.get("latency", 0.0) for m in st.session_state.messages if m["role"] == "assistant" and m.get("latency")]
+    avg_latency = round(sum(latencies) / len(latencies), 2) if latencies else 0.0
+
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Total Messages", total_msgs, "Current Session")
+    a2.metric("Student Questions", student_q, "Queries processed")
+    a3.metric("AI Responses", ai_resp, "Generated")
+    a4.metric("Avg Response Speed", f"{avg_latency}s" if avg_latency else "Sub-sec", "Groq LPU Latency")
+
+    st.write("")
+    st.markdown("### 📋 Recent Query Audit Log")
+
+    if not st.session_state.query_analytics:
+        st.info("No queries have been submitted in this session yet. Ask a question in the AI Assistant tab to see telemetry.")
+    else:
+        st.dataframe(
+            st.session_state.query_analytics,
+            column_config={
+                "query": "Student Query",
+                "time": "Timestamp",
+                "latency": st.column_config.NumberColumn("Latency (s)", format="%.2f s"),
+                "sources_count": "Sources Retrieved",
+                "model": "Model Used",
+                "status": "Inference Status",
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# =========================================================
+# 11. VIEW: SETTINGS & SYSTEM HEALTH
+# =========================================================
+elif st.session_state.page == "Settings & Health":
+    st.markdown("""
+    <div style="margin-bottom: 20px;">
+      <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
+        APPLICATION CONFIGURATION
+      </div>
+      <h2 style="margin: 4px 0 6px 0;">Settings & System Health</h2>
+      <p style="color: #94A3B8; font-size: 14px; margin: 0;">
+        Adjust retrieval parameters, choose LLM models, and perform live connectivity checks.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_conf, col_health = st.columns([2, 1.3])
+
+    with col_conf:
+        with st.container(border=True):
+            st.markdown("### ⚙️ Inference & Retrieval Parameters")
+
+            # Model selector
+            st.session_state.selected_model = st.selectbox(
+                "Active Groq LLM Model",
+                options=config.AVAILABLE_MODELS,
+                index=config.AVAILABLE_MODELS.index(st.session_state.selected_model) if st.session_state.selected_model in config.AVAILABLE_MODELS else 0,
+                help="Select which high-speed model generates answers from retrieved documents.",
+            )
+
+            # Top-K documents
+            st.session_state.top_k = st.slider(
+                "Top-K Document Chunks to Retrieve",
+                min_value=1,
+                max_value=8,
+                value=st.session_state.top_k,
+                help="Higher values provide more context to the LLM but slightly increase prompt size.",
+            )
+
+            # Temperature
+            st.session_state.temperature = st.slider(
+                "LLM Temperature (Creativity vs Determinism)",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(st.session_state.temperature),
+                step=0.05,
+                help="Lower values (0.0-0.2) ensure factual adherence to college documents.",
+            )
+
+            st.write("")
+            if st.button("Save & Apply Settings", type="primary", use_container_width=True):
+                st.toast("Settings saved successfully!", icon="✅")
+
+    with col_health:
+        with st.container(border=True):
+            st.markdown("### 🩺 Diagnostic Health Check")
+            health_report = check_system_health()
+
+            for key, val in health_report.items():
+                if key == "all_healthy":
+                    continue
+                display_label = key.replace("_", " ").title()
+                if isinstance(val, bool):
+                    status_emoji = "✅" if val else "❌"
+                    st.markdown(f"**{display_label}:** {status_emoji}")
+                else:
+                    st.markdown(f"**{display_label}:** `{val}`")
+
+            st.write("")
+            if st.button("Ping Groq API 📡", use_container_width=True):
+                with st.spinner("Testing Groq connection..."):
+                    try:
+                        from rag_pipeline import get_cached_llm
+                        test_llm = get_cached_llm(model_name=st.session_state.selected_model)
+                        t0 = time.time()
+                        test_resp = test_llm.invoke("Ping")
+                        p_time = round((time.time() - t0) * 1000, 1)
+                        st.success(f"Groq API Connected! Latency: {p_time}ms")
+                    except Exception as ping_err:
+                        st.error(f"Ping failed: {ping_err}")
+
+    st.write("")
     with st.container(border=True):
-        st.markdown("### 🎓 MIST College Chatbot")
-        st.write("Mother Teresa Institute of Science and Technology")
-        st.caption("Version 2.0 · Retrieval Augmented Generation")
-        st.write("Answers are generated using the documents indexed in the connected vector database.")
-    st.caption("For official college policies, always confirm details with the relevant college office.")
+        st.markdown("### 🎓 About MIST College Chatbot")
+        st.markdown(f"""
+        **CampusConnect AI** is an intelligent retrieval-augmented generation (RAG) assistant created for **{config.COLLEGE_NAME}**.
+        - **Vector Index:** ChromaDB persistent store with `{config.EMBEDDING_MODEL}`
+        - **Embedding Dimensions:** {config.EMBEDDING_DIMENSIONS} dimensions (normalized cosine similarity)
+        - **Frameworks:** LangChain, Streamlit, Groq LPUs, PyPDF
+        - **Safety & Verification:** Strict prompt guardrails preventing invented fees, dates, or regulations.
+        """)
