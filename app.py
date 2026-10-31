@@ -6,31 +6,36 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 import streamlit as st
+import pandas as pd
 from pypdf import PdfReader
 
-# Ensure stdout uses UTF-8 to prevent charmap errors on Windows
+# Reconfigure Windows stdout/stderr to UTF-8
 if sys.platform.startswith("win"):
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except AttributeError:
+        if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
         pass
 
 import config
 from rag_pipeline import (
     get_answer_detailed,
+    prepare_rag_context,
+    get_cached_llm,
+    get_suggested_followups,
     search_knowledge_base,
     check_system_health,
     reload_vectorstore,
-    get_cached_vectorstore,
-    extract_urls,
 )
 from ingest import build_vector_database
 
 # =========================================================
-# 1. PAGE SETUP
+# 1. PAGE SETUP & METADATA
 # =========================================================
 st.set_page_config(
-    page_title="MIST Connect AI · College Knowledge Desk",
+    page_title=f"{config.COLLEGE_SHORT_NAME} Connect AI · Enterprise Campus Assistant",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -48,6 +53,7 @@ DEFAULT_SESSION_STATE = {
     "conversation_history": [],
     "query_analytics": [],
     "feedback_store": {},
+    "pending_query": None,
 }
 
 for key, val in DEFAULT_SESSION_STATE.items():
@@ -56,41 +62,42 @@ for key, val in DEFAULT_SESSION_STATE.items():
 
 
 # =========================================================
-# 3. HIGH-END UI STYLING & THEMING (CSS)
+# 3. PRODUCTION-GRADE DESIGN SYSTEM & STYLING (CSS)
 # =========================================================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
     --bg-page: #070B16;
     --bg-card: #0D1426;
-    --bg-card-hover: #131C35;
+    --bg-card-hover: #121B33;
     --bg-surface: #101930;
-    --border-subtle: rgba(135, 156, 225, 0.14);
-    --border-accent: rgba(124, 114, 255, 0.35);
-    --text-primary: #F4F7FF;
-    --text-secondary: #9EAFD0;
-    --text-muted: #6C7F9F;
+    --border-subtle: rgba(135, 156, 225, 0.12);
+    --border-accent: rgba(99, 102, 241, 0.35);
+    --text-primary: #F8FAFC;
+    --text-secondary: #94A3B8;
+    --text-muted: #64748B;
     --brand-primary: #6366F1;
     --brand-secondary: #3B82F6;
     --brand-gradient: linear-gradient(135deg, #6366F1 0%, #3B82F6 100%);
-    --card-glow: 0 8px 30px rgba(0, 0, 0, 0.25);
     --accent-emerald: #10B981;
+    --accent-amber: #F59E0B;
 }
 
-/* App Background */
+/* Page background with subtle ambient radial gradients */
 .stApp {
-    background: radial-gradient(circle at 80% 0%, rgba(99, 102, 241, 0.12) 0%, transparent 40%),
-                radial-gradient(circle at 10% 90%, rgba(59, 130, 246, 0.08) 0%, transparent 40%),
-                var(--bg-page);
+    background:
+        radial-gradient(circle at 82% 0%, rgba(99, 102, 241, 0.12) 0%, transparent 45%),
+        radial-gradient(circle at 10% 90%, rgba(59, 130, 246, 0.08) 0%, transparent 45%),
+        var(--bg-page);
     color: var(--text-primary);
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 .block-container {
-    max-width: 1300px;
-    padding-top: 1.2rem;
+    max-width: 1320px;
+    padding-top: 1rem;
     padding-bottom: 3.5rem;
 }
 
@@ -98,14 +105,18 @@ st.markdown("""
 h1, h2, h3, h4 {
     font-family: 'Space Grotesk', sans-serif !important;
     color: var(--text-primary) !important;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
 }
 
 p, span, label, div {
     color: var(--text-primary);
 }
 
-/* Streamlit Native Chrome Cleanup */
+code, pre {
+    font-family: 'JetBrains Mono', monospace !important;
+}
+
+/* Streamlit Header / Chrome Cleanup */
 #MainMenu, footer, [data-testid="stDeployButton"] {
     visibility: hidden !important;
     display: none !important;
@@ -116,22 +127,22 @@ header[data-testid="stHeader"] {
     height: 0 !important;
 }
 
-/* Custom Sidebar Styling */
+/* Custom Sidebar */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #090E1D 0%, #080D1A 100%) !important;
+    background: linear-gradient(180deg, #090E1D 0%, #070B16 100%) !important;
     border-right: 1px solid var(--border-subtle);
 }
 
-.sidebar-brand {
+.sidebar-brand-box {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 8px 6px 18px 6px;
+    padding: 10px 8px 18px 8px;
     border-bottom: 1px solid var(--border-subtle);
     margin-bottom: 16px;
 }
 
-.brand-icon {
+.brand-badge-icon {
     width: 44px;
     height: 44px;
     border-radius: 12px;
@@ -140,10 +151,10 @@ header[data-testid="stHeader"] {
     align-items: center;
     justify-content: center;
     font-size: 22px;
-    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.35);
+    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.4);
 }
 
-.brand-text-title {
+.brand-title {
     font-family: 'Space Grotesk', sans-serif;
     font-weight: 700;
     font-size: 19px;
@@ -151,36 +162,36 @@ header[data-testid="stHeader"] {
     line-height: 1.2;
 }
 
-.brand-text-sub {
-    font-size: 10px;
-    font-weight: 600;
-    color: #8BA1C7;
-    letter-spacing: 0.5px;
+.brand-subtitle {
+    font-size: 9.5px;
+    font-weight: 700;
+    color: #818CF8;
+    letter-spacing: 1px;
     text-transform: uppercase;
 }
 
-.nav-section-label {
+.nav-label {
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 1.5px;
+    letter-spacing: 1.4px;
     color: var(--text-muted);
     text-transform: uppercase;
     margin: 16px 0 8px 8px;
 }
 
-/* Sidebar navigation buttons */
+/* Active Nav Button Styling */
 [data-testid="stSidebar"] .stButton > button {
     background: transparent !important;
     border: 1px solid transparent !important;
     color: var(--text-secondary) !important;
     text-align: left !important;
     justify-content: flex-start !important;
-    border-radius: 10px !important;
+    border-radius: 11px !important;
     min-height: 42px !important;
     padding: 0 14px !important;
     font-weight: 600 !important;
     font-size: 13.5px !important;
-    transition: all 0.2s ease !important;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
 [data-testid="stSidebar"] .stButton > button:hover {
@@ -190,42 +201,30 @@ header[data-testid="stHeader"] {
     transform: translateX(3px);
 }
 
-/* Sidebar Info Card */
-.sidebar-status-box {
-    margin-top: 14px;
-    padding: 12px 14px;
-    background: rgba(16, 25, 48, 0.7);
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px;
-    font-size: 11.5px;
+/* Primary Active Button in Sidebar */
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0.24) 0%, rgba(59, 130, 246, 0.16) 100%) !important;
+    border: 1px solid rgba(99, 102, 241, 0.45) !important;
+    color: #FFFFFF !important;
+    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.25) !important;
 }
 
-.status-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--accent-emerald);
-    box-shadow: 0 0 8px var(--accent-emerald);
-    margin-right: 6px;
-}
-
-/* Hero & Header Section */
-.hero-wrapper {
+/* Hero Section */
+.hero-container {
     text-align: center;
-    max-width: 900px;
-    margin: 20px auto 35px auto;
+    max-width: 920px;
+    margin: 15px auto 30px auto;
     padding: 10px 20px;
 }
 
-.hero-badge {
+.hero-pill {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 14px;
+    padding: 5px 14px;
     border-radius: 100px;
     background: rgba(99, 102, 241, 0.12);
-    border: 1px solid rgba(99, 102, 241, 0.28);
+    border: 1px solid rgba(99, 102, 241, 0.3);
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.6px;
@@ -234,89 +233,86 @@ header[data-testid="stHeader"] {
     margin-bottom: 14px;
 }
 
-.hero-title {
-    font-size: clamp(30px, 4vw, 46px);
+.hero-header-text {
+    font-size: clamp(30px, 4.2vw, 46px);
     font-weight: 700;
-    line-height: 1.18;
+    line-height: 1.15;
     margin-bottom: 12px;
-    background: linear-gradient(135deg, #FFFFFF 30%, #CAD8FF 70%, #A5B4FC 100%);
+    background: linear-gradient(135deg, #FFFFFF 20%, #D8E4FF 65%, #A5B4FC 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
-.hero-subtitle {
-    font-size: 15px;
+.hero-sub-text {
+    font-size: 14.5px;
     color: var(--text-secondary);
     line-height: 1.6;
     max-width: 680px;
     margin: 0 auto;
 }
 
-/* Prompt Starter Cards */
-.starter-card-box {
-    background: linear-gradient(145deg, #0E162B 0%, #0A1020 100%);
+/* Topic Starter Cards */
+.starter-box {
+    background: linear-gradient(145deg, #0D152A 0%, #080D1A 100%);
     border: 1px solid var(--border-subtle);
     border-radius: 14px;
-    padding: 16px;
+    padding: 15px;
     height: 100%;
     transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
 }
 
-.starter-card-box:hover {
-    border-color: rgba(99, 102, 241, 0.4);
-    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+.starter-box:hover {
+    border-color: rgba(99, 102, 241, 0.45);
+    box-shadow: 0 8px 26px rgba(99, 102, 241, 0.2);
     transform: translateY(-2px);
 }
 
-.starter-card-title {
+.starter-title {
     font-weight: 700;
     font-size: 13.5px;
     color: #FFFFFF;
     margin-bottom: 6px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
 }
 
-.starter-card-desc {
+.starter-desc {
     font-size: 11.5px;
     color: var(--text-secondary);
     line-height: 1.45;
 }
 
-/* Chat Message Styling */
+/* Chat Messages */
 [data-testid="stChatMessage"] {
-    background: rgba(13, 20, 38, 0.85) !important;
+    background: rgba(13, 20, 38, 0.88) !important;
     border: 1px solid var(--border-subtle) !important;
     border-radius: 16px !important;
-    padding: 18px 20px !important;
-    margin-bottom: 16px !important;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
+    padding: 18px 22px !important;
+    margin-bottom: 14px !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.22);
 }
 
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-    background: rgba(20, 31, 60, 0.85) !important;
-    border-color: rgba(99, 102, 241, 0.22) !important;
+    background: rgba(20, 31, 60, 0.88) !important;
+    border-color: rgba(99, 102, 241, 0.26) !important;
 }
 
-/* Source Citation Accordions */
-.source-pill {
+/* Source Citation Accordions & Badges */
+.source-pill-badge {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 5px 12px;
     border-radius: 8px;
-    background: rgba(99, 102, 241, 0.15);
-    border: 1px solid rgba(99, 102, 241, 0.28);
-    font-size: 11px;
+    background: rgba(99, 102, 241, 0.16);
+    border: 1px solid rgba(99, 102, 241, 0.32);
+    font-size: 11.5px;
     font-weight: 600;
     color: #C7D2FE;
     margin-right: 6px;
     margin-top: 6px;
 }
 
-.source-snippet {
+.source-excerpt {
     background: #090E1D;
     border-left: 3px solid var(--brand-primary);
     padding: 10px 14px;
@@ -327,21 +323,39 @@ header[data-testid="stHeader"] {
     line-height: 1.55;
 }
 
-/* Metric Cards */
+/* Follow-up Question Chips */
+.followup-box {
+    margin-top: 14px;
+    padding: 10px 14px;
+    background: rgba(16, 25, 48, 0.5);
+    border: 1px dashed rgba(135, 156, 225, 0.2);
+    border-radius: 12px;
+}
+
+.followup-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #818CF8;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+
+/* Metrics Cards */
 [data-testid="stMetric"] {
     background: var(--bg-card);
     border: 1px solid var(--border-subtle);
     border-radius: 14px;
     padding: 18px;
-    box-shadow: var(--card-glow);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
 }
 
 [data-testid="stMetricLabel"] {
-    font-size: 12px !important;
+    font-size: 11.5px !important;
     color: var(--text-secondary) !important;
-    font-weight: 600 !important;
+    font-weight: 700 !important;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.6px;
 }
 
 [data-testid="stMetricValue"] {
@@ -351,134 +365,48 @@ header[data-testid="stHeader"] {
     color: #FFFFFF !important;
 }
 
-/* Buttons */
-.stButton > button {
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-    transition: all 0.2s ease !important;
-}
-
-/* Primary Action Buttons */
-.primary-btn button {
-    background: var(--brand-gradient) !important;
-    color: #FFFFFF !important;
-    border: none !important;
-    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.35) !important;
-}
-
-.primary-btn button:hover {
-    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.55) !important;
-    transform: translateY(-1px);
-}
-
-/* Containers with border */
-div[data-testid="stVerticalBlockBorderWrapper"] {
-    background: rgba(13, 20, 38, 0.65);
-    border-color: var(--border-subtle) !important;
-    border-radius: 16px !important;
-    padding: 6px;
-}
-
-/* Expander custom styling */
-.streamlit-expanderHeader {
-    background: rgba(16, 25, 48, 0.6) !important;
-    border-radius: 10px !important;
-    font-size: 12.5px !important;
-    font-weight: 600 !important;
-    color: #CAD8FF !important;
-}
-
-/* Chat Input Bar Fix */
+/* Chat Input Bar */
 [data-testid="stChatInput"] {
     border-radius: 14px !important;
-    border: 1px solid rgba(99, 102, 241, 0.3) !important;
+    border: 1px solid rgba(99, 102, 241, 0.35) !important;
     background: #0E162B !important;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4) !important;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45) !important;
 }
 
 [data-testid="stChatInput"]:focus-within {
     border-color: #6366F1 !important;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25) !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
 
 # =========================================================
-# 4. APPLICATION HELPERS
+# 4. DISPATCH USER QUESTION
 # =========================================================
-def handle_user_query(question: str):
-    """Processes a user question, stores query telemetry, and renders the result."""
-    q = question.strip()
-    if not q:
-        return
-
-    # Append user question
-    st.session_state.messages.append({
-        "role": "user",
-        "content": q,
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
-    })
-
-    # Save to history
-    if q not in st.session_state.conversation_history:
-        st.session_state.conversation_history.insert(0, q)
-        st.session_state.conversation_history = st.session_state.conversation_history[:10]
-
-    # Generate assistant answer
-    with st.spinner("Retrieving official college documents & formulating answer..."):
-        result = get_answer_detailed(
-            question=q,
-            model_name=st.session_state.selected_model,
-            top_k=st.session_state.top_k,
-            temperature=st.session_state.temperature,
-        )
-
-    # Store message
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": result["answer"],
-        "sources": result.get("sources", []),
-        "latency": result.get("latency_seconds", 0.0),
-        "model": result.get("model_used", st.session_state.selected_model),
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
-        "success": result.get("success", True),
-    })
-
-    # Store telemetry for analytics
-    st.session_state.query_analytics.append({
-        "query": q,
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "latency": result.get("latency_seconds", 0.0),
-        "sources_count": len(result.get("sources", [])),
-        "model": result.get("model_used", st.session_state.selected_model),
-        "status": "Success" if result.get("success", True) else "Failed",
-    })
-
-
-def reset_conversation():
-    """Clears the chat messages and starts a fresh conversation."""
-    st.session_state.messages = []
+def set_pending_query(query: str):
+    """Sets a query to be executed on next rerun."""
+    st.session_state.pending_query = query
     st.session_state.page = "AI Assistant"
 
 
 # =========================================================
-# 5. SIDEBAR NAVIGATION & CONTROLS
+# 5. SIDEBAR NAVIGATION & CONTROL DESK
 # =========================================================
 with st.sidebar:
-    # Brand Header
+    # College Branding Header
     st.markdown(f"""
-    <div class="sidebar-brand">
-      <div class="brand-icon">🎓</div>
+    <div class="sidebar-brand-box">
+      <div class="brand-badge-icon">🎓</div>
       <div>
-        <div class="brand-text-title">{config.COLLEGE_SHORT_NAME} Connect</div>
-        <div class="brand-text-sub">Campus AI Assistant</div>
+        <div class="brand-title">{config.COLLEGE_SHORT_NAME} Connect</div>
+        <div class="brand-subtitle">Campus AI Intelligence</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Navigation Menu
-    st.markdown('<div class="nav-section-label">Navigation</div>', unsafe_allow_html=True)
+    # Workspaces Navigation
+    st.markdown('<div class="nav-label">Workspaces</div>', unsafe_allow_html=True)
     nav_tabs = [
         ("💬", "AI Assistant"),
         ("📊", "College Dashboard"),
@@ -491,21 +419,23 @@ with st.sidebar:
     for icon, tab_name in nav_tabs:
         is_active = st.session_state.page == tab_name
         label_text = f"{icon}  {tab_name}"
-        if st.button(label_text, key=f"nav_{tab_name}", use_container_width=True):
+        button_type = "primary" if is_active else "secondary"
+        if st.button(label_text, key=f"nav_{tab_name}", type=button_type, use_container_width=True):
             st.session_state.page = tab_name
             st.rerun()
 
-    # Conversation Management
-    st.markdown('<div class="nav-section-label">Session Controls</div>', unsafe_allow_html=True)
+    # Session Controls
+    st.markdown('<div class="nav-label">Session Actions</div>', unsafe_allow_html=True)
     col_new, col_exp = st.columns(2)
     with col_new:
         if st.button("＋ New Chat", key="btn_new_chat", use_container_width=True):
-            reset_conversation()
+            st.session_state.messages = []
+            st.session_state.pending_query = None
+            st.session_state.page = "AI Assistant"
             st.rerun()
     with col_exp:
-        # Export chat as markdown
         if st.session_state.messages:
-            transcript = f"# MIST Connect AI - Conversation Log\n\n*Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n"
+            transcript = f"# MIST Connect AI - Conversation Log\n*Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n"
             for m in st.session_state.messages:
                 role = "Student" if m["role"] == "user" else "MIST AI Assistant"
                 transcript += f"### {role} ({m.get('timestamp', '')}):\n{m['content']}\n\n"
@@ -519,68 +449,70 @@ with st.sidebar:
         else:
             st.button("📥 Export", disabled=True, use_container_width=True)
 
-    # Recent queries in sidebar
+    # Conversation History
     if st.session_state.conversation_history:
-        st.markdown('<div class="nav-section-label">Recent Questions</div>', unsafe_allow_html=True)
+        st.markdown('<div class="nav-label">Recent Inquiries</div>', unsafe_allow_html=True)
         for h_idx, h_query in enumerate(st.session_state.conversation_history[:5]):
-            short_q = h_query[:32] + ("..." if len(h_query) > 32 else "")
-            if st.button(f"◦ {short_q}", key=f"history_{h_idx}", use_container_width=True):
-                st.session_state.page = "AI Assistant"
-                handle_user_query(h_query)
+            short_q = h_query[:30] + ("..." if len(h_query) > 30 else "")
+            if st.button(f"◦ {short_q}", key=f"hist_btn_{h_idx}", use_container_width=True):
+                set_pending_query(h_query)
                 st.rerun()
 
-    # System Status & Quick Contact Card
-    st.markdown('<div class="nav-section-label">Campus Helpdesk</div>', unsafe_allow_html=True)
+    # Campus Helpdesk Card
+    st.markdown('<div class="nav-label">Official Helpdesk</div>', unsafe_allow_html=True)
     st.markdown(f"""
-    <div class="sidebar-status-box">
-      <div><span class="status-dot"></span><strong>System Status: Active</strong></div>
-      <div style="color: #8BA1C7; margin-top: 6px; font-size: 11px;">
-        • <strong>Model:</strong> {st.session_state.selected_model.split('/')[-1]}<br>
-        • <strong>Docs:</strong> 6 PDFs Indexed<br>
-        • <strong>Vector DB:</strong> ChromaDB (Ready)
+    <div style="background: rgba(16,25,48,0.7); border: 1px solid rgba(135,156,225,0.14); border-radius: 12px; padding: 12px; font-size: 11px;">
+      <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+        <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#10B981; box-shadow:0 0 8px #10B981;"></span>
+        <strong style="color: #FFFFFF;">System Active (Sub-sec)</strong>
       </div>
-      <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(135,156,225,0.12); font-size: 10.5px; color: #7E93B8;">
+      <div style="color: #94A3B8; line-height: 1.7;">
+        • <strong>Engine:</strong> {st.session_state.selected_model.split('/')[-1]}<br>
+        • <strong>Docs:</strong> 6 Official PDFs<br>
+        • <strong>Store:</strong> ChromaDB (Cached)
+      </div>
+      <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(135,156,225,0.12); color: #818CF8;">
         📞 {config.COLLEGE_PHONE}<br>
         ✉️ {config.COLLEGE_EMAIL}<br>
-        🌐 <a href="{config.COLLEGE_WEBSITE}" target="_blank" style="color: #A5B4FC;">mist.edu.in</a>
+        🌐 <a href="{config.COLLEGE_WEBSITE}" target="_blank" style="color: #A5B4FC; text-decoration: underline;">mist.edu.in</a>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
 
 # =========================================================
-# 6. VIEW: AI ASSISTANT
+# 6. WORKSPACE: AI ASSISTANT (STREAMING & CITATIONS)
 # =========================================================
 if st.session_state.page == "AI Assistant":
-    # Header bar
-    head_left, head_right = st.columns([4, 1.2])
-    with head_left:
+    # Top Banner
+    t_left, t_right = st.columns([4, 1.2])
+    with t_left:
         st.markdown(f"""
-        <div style="margin-bottom: 8px;">
-          <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
-            {config.COLLEGE_SHORT_NAME} · OFFICIAL FAQ & ADMISSIONS DESK
+        <div style="margin-bottom: 12px;">
+          <div style="font-size: 10.5px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
+            {config.COLLEGE_SHORT_NAME} · ACADEMIC & ADMISSIONS INTELLIGENCE DESK
           </div>
-          <h2 style="margin: 4px 0; font-size: 26px;">CampusConnect AI Assistant</h2>
+          <h2 style="margin: 3px 0 5px 0; font-size: 26px;">CampusConnect Virtual Advisor</h2>
           <div style="font-size: 13px; color: #94A3B8;">
-            Direct answers verified against official {config.COLLEGE_SHORT_NAME} regulations, fees, and syllabus documents.
+            Instant answers grounded in official M24/R22 regulations, published fee circulars, and departmental databases.
           </div>
         </div>
         """, unsafe_allow_html=True)
-    with head_right:
+    with t_right:
         st.markdown(f"""
         <div style="text-align: right; margin-top: 8px;">
-          <span class="hero-badge">● MODEL: {st.session_state.selected_model.split('/')[-1]}</span>
+          <span class="hero-pill">⚡ MODEL: {st.session_state.selected_model.split('/')[-1]}</span>
         </div>
         """, unsafe_allow_html=True)
 
-    # Empty State: Welcome Banner & Topic Starter Cards
-    if not st.session_state.messages:
+    # Landing State: Hero Greeting & Interactive Topic Starters
+    if not st.session_state.messages and not st.session_state.pending_query:
         st.markdown(f"""
-        <div class="hero-wrapper">
-          <div class="hero-badge">✦ OFFICIAL CAMPUS INTELLIGENCE PLATFORM</div>
-          <div class="hero-title">Welcome to MIST Student Assistant 👋</div>
-          <p class="hero-subtitle">
-            Ask any question regarding admissions, fee structure, semester attendance, autonomous exam rules, or academic departments.
+        <div class="hero-container">
+          <div class="hero-pill">✦ OFFICIAL COLLEGE KNOWLEDGE PLATFORM</div>
+          <div class="hero-header-text">Welcome to MIST Student Assistant 👋</div>
+          <p class="hero-sub-text">
+            Ask any question regarding admissions eligibility, course fees, attendance rules, autonomous examination grading, or academic departments.
           </p>
         </div>
         """, unsafe_allow_html=True)
@@ -588,80 +520,176 @@ if st.session_state.page == "AI Assistant":
         st.markdown('<div style="font-size: 11px; font-weight: 700; color: #8BA1C7; letter-spacing: 1.2px; text-transform: uppercase; margin-bottom: 12px;">Frequently Explored Topics</div>', unsafe_allow_html=True)
 
         starter_prompts = [
-            ("💳", "Fee Structure", "What fee amounts are published for B.Tech, M.Tech, MBA, and Diploma?", "Tuition & program fees"),
+            ("💳", "Published Fee Structure", "What fee amounts are published for B.Tech, M.Tech, MBA, and Diploma?", "Tuition & program fees"),
             ("🎓", "Admissions & Entry", "How do I apply for B.Tech admission at MIST and what is the entrance rank requirement?", "EAMCET, counselling & eligibility"),
-            ("📅", "Attendance Rules", "What are the attendance regulations, condonation rules, and semester timeline under M24?", "Minimum attendance & condonation"),
-            ("📝", "Exam Regulations", "What examination regulations, CIE, and SEE rules apply to students at MIST?", "Evaluation, hall tickets & results"),
-            ("🏛️", "Departments & Labs", "What academic departments and specialisations are available at MIST?", "CSE, AI&ML, ECE, EEE, Mech, Civil"),
-            ("📍", "College Profile", "Where is MIST located and what accreditations does the institution hold?", "NAAC A+, autonomous status & campus"),
+            ("📅", "Attendance Regulations", "What are the attendance regulations, condonation rules, and semester timeline under M24?", "Minimum attendance & condonation"),
+            ("📝", "Autonomous Exam Rules", "What examination regulations, CIE, and SEE rules apply to students at MIST?", "Evaluation, hall tickets & results"),
+            ("🔬", "Engineering Departments", "What academic departments and specialisations are available at MIST?", "CSE, AI&ML, ECE, EEE, Mech, Civil"),
+            ("🏛️", "Campus & Profile", "Where is MIST located and what accreditations does the institution hold?", "NAAC A+, autonomous status & campus"),
         ]
 
-        c_rows = [st.columns(3), st.columns(3)]
+        row_cols = [st.columns(3), st.columns(3)]
         for idx, (emoji, title, query, desc) in enumerate(starter_prompts):
-            row_idx = 0 if idx < 3 else 1
-            col_target = c_rows[row_idx][idx % 3]
-            with col_target:
+            target_col = row_cols[0 if idx < 3 else 1][idx % 3]
+            with target_col:
                 st.markdown(f"""
-                <div class="starter-card-box">
-                  <div class="starter-card-title">{emoji} {title}</div>
-                  <div class="starter-card-desc">{desc}</div>
+                <div class="starter-box">
+                  <div class="starter-title">{emoji} {title}</div>
+                  <div class="starter-desc">{desc}</div>
                 </div>
                 """, unsafe_allow_html=True)
-                if st.button("Ask Assistant →", key=f"starter_btn_{idx}", use_container_width=True):
-                    handle_user_query(query)
+                if st.button("Explore Topic →", key=f"start_btn_{idx}", use_container_width=True):
+                    set_pending_query(query)
                     st.rerun()
 
-    # Active Conversation Display
-    else:
-        for idx, msg in enumerate(st.session_state.messages):
-            avatar = "👤" if msg["role"] == "user" else "🎓"
-            with st.chat_message(msg["role"], avatar=avatar):
-                st.markdown(msg["content"])
+    # Active Conversation History
+    for idx, msg in enumerate(st.session_state.messages):
+        avatar = "👤" if msg["role"] == "user" else "🎓"
+        with st.chat_message(msg["role"], avatar=avatar):
+            st.markdown(msg["content"])
 
-                # Render sources and citations for assistant messages
-                if msg["role"] == "assistant" and msg.get("sources"):
-                    sources = msg["sources"]
-                    with st.expander(f"📚 Verified Sources & References ({len(sources)} documents)", expanded=False):
-                        for s_idx, src in enumerate(sources):
-                            st.markdown(
-                                f"<span class='source-pill'>📄 <strong>{src['source']}</strong> · Page {src['page']}</span>",
-                                unsafe_allow_html=True,
-                            )
-                            st.markdown(f"<div class='source-snippet'>\"{src['snippet']}\"</div>", unsafe_allow_html=True)
-                            if src.get("urls"):
-                                for u in src["urls"]:
-                                    st.markdown(f"🔗 [Official Portal Link]({u})")
+            # Render Verified Citations for Assistant Answers
+            if msg["role"] == "assistant" and msg.get("sources"):
+                sources = msg["sources"]
+                with st.expander(f"📚 Verified Sources & References ({len(sources)} citations)", expanded=False):
+                    for s_idx, src in enumerate(sources):
+                        st.markdown(
+                            f"<span class='source-pill-badge'>📄 <strong>{src['source']}</strong> · Page {src['page']}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(f"<div class='source-excerpt'>\"{src['snippet']}\"</div>", unsafe_allow_html=True)
+                        if src.get("urls"):
+                            for u in src["urls"]:
+                                st.markdown(f"🔗 [Official Portal Link]({u})")
 
-                    # Metadata badge & Action tools
-                    col_meta, col_actions = st.columns([3, 1])
-                    with col_meta:
-                        st.caption(f"⚡ Latency: {msg.get('latency', 0.0)}s · Engine: {msg.get('model', 'Groq LPU')} · {msg.get('timestamp', '')}")
-                    with col_actions:
-                        f_col1, f_col2 = st.columns(2)
-                        with f_col1:
-                            if st.button("👍", key=f"like_{idx}", help="Helpful answer"):
-                                st.session_state.feedback_store[idx] = "like"
-                                st.toast("Thank you for your feedback!", icon="✨")
-                        with f_col2:
-                            if st.button("👎", key=f"dislike_{idx}", help="Needs improvement"):
-                                st.session_state.feedback_store[idx] = "dislike"
-                                st.toast("Feedback noted. We will refine document citations.", icon="📝")
+                # Telemetry & Feedback
+                c_meta, c_actions = st.columns([3, 1])
+                with c_meta:
+                    st.caption(f"⚡ Latency: {msg.get('latency', 0.0)}s · Engine: {msg.get('model', 'Groq LPU')} · {msg.get('timestamp', '')}")
+                with c_actions:
+                    f_col1, f_col2 = st.columns(2)
+                    with f_col1:
+                        if st.button("👍", key=f"thumb_up_{idx}", help="Helpful"):
+                            st.session_state.feedback_store[idx] = "like"
+                            st.toast("Feedback recorded! Thank you.", icon="✨")
+                    with f_col2:
+                        if st.button("👎", key=f"thumb_down_{idx}", help="Needs improvement"):
+                            st.session_state.feedback_store[idx] = "dislike"
+                            st.toast("Feedback noted. We will refine document citations.", icon="📝")
 
-    # Bottom Chat Input Bar (Native, fluid, auto-clearing, Enter-friendly)
-    user_input = st.chat_input("Ask MIST AI… e.g., 'What are the attendance requirements?' or 'What is B.Tech fee?'")
-    if user_input:
-        handle_user_query(user_input)
+                # Suggested Follow-Up Questions
+                followups = msg.get("followups", [])
+                if followups:
+                    st.markdown("""
+                    <div class="followup-box">
+                      <div class="followup-label">✦ Suggested Follow-up Questions</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    f_cols = st.columns(len(followups))
+                    for f_idx, f_query in enumerate(followups):
+                        with f_cols[f_idx]:
+                            if st.button(f_query, key=f"fup_{idx}_{f_idx}", use_container_width=True):
+                                set_pending_query(f_query)
+                                st.rerun()
+
+    # Process Pending Query with Real-Time Streaming
+    if st.session_state.pending_query:
+        active_q = st.session_state.pending_query
+        st.session_state.pending_query = None
+
+        # Add to conversation history
+        if active_q not in st.session_state.conversation_history:
+            st.session_state.conversation_history.insert(0, active_q)
+            st.session_state.conversation_history = st.session_state.conversation_history[:10]
+
+        # Display user message
+        st.session_state.messages.append({
+            "role": "user",
+            "content": active_q,
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+        })
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(active_q)
+
+        # Retrieve context & Stream answer
+        start_t = time.perf_counter()
+        with st.chat_message("assistant", avatar="🎓"):
+            with st.spinner("Retrieving verified college documents..."):
+                prompt, sources, context_text = prepare_rag_context(
+                    active_q,
+                    top_k=st.session_state.top_k,
+                )
+
+            # Stream LLM generation
+            llm = get_cached_llm(
+                model_name=st.session_state.selected_model,
+                temperature=st.session_state.temperature,
+            )
+
+            def token_generator():
+                for chunk in llm.stream(prompt):
+                    if chunk.content:
+                        yield chunk.content
+
+            response_content = st.write_stream(token_generator())
+            elapsed = round(time.perf_counter() - start_t, 2)
+
+            # Render Citations Immediately
+            if sources:
+                with st.expander(f"📚 Verified Sources & References ({len(sources)} citations)", expanded=False):
+                    for src in sources:
+                        st.markdown(
+                            f"<span class='source-pill-badge'>📄 <strong>{src['source']}</strong> · Page {src['page']}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(f"<div class='source-excerpt'>\"{src['snippet']}\"</div>", unsafe_allow_html=True)
+                        if src.get("urls"):
+                            for u in src["urls"]:
+                                st.markdown(f"🔗 [Official Portal Link]({u})")
+
+            st.caption(f"⚡ Latency: {elapsed}s · Engine: {st.session_state.selected_model} · {datetime.now().strftime('%H:%M:%S')}")
+
+            # Generate smart follow-up suggestions
+            followup_suggestions = get_suggested_followups(active_q, response_content)
+
+            # Store in session state messages
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response_content,
+                "sources": sources,
+                "latency": elapsed,
+                "model": st.session_state.selected_model,
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "followups": followup_suggestions,
+            })
+
+            # Record telemetry
+            st.session_state.query_analytics.append({
+                "query": active_q,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "latency": elapsed,
+                "sources_count": len(sources),
+                "model": st.session_state.selected_model,
+                "status": "Success",
+            })
+
+            st.rerun()
+
+    # Chat Input Box (Fixed at bottom, Enter-to-send, Auto-clearing)
+    chat_input_val = st.chat_input("Ask MIST AI… e.g., 'What is B.Tech fee structure?' or 'What are attendance condonation rules?'")
+    if chat_input_val:
+        set_pending_query(chat_input_val)
         st.rerun()
 
 
 # =========================================================
-# 7. VIEW: COLLEGE DASHBOARD
+# 7. WORKSPACE: COLLEGE DASHBOARD
 # =========================================================
 elif st.session_state.page == "College Dashboard":
     st.markdown(f"""
     <div style="margin-bottom: 20px;">
       <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
-        {config.COLLEGE_SHORT_NAME} · INSTITUTION OVERVIEW
+        {config.COLLEGE_SHORT_NAME} · OVERVIEW
       </div>
       <h2 style="margin: 4px 0 6px 0;">College Operations Dashboard</h2>
       <p style="color: #94A3B8; font-size: 14px; margin: 0;">
@@ -670,18 +698,16 @@ elif st.session_state.page == "College Dashboard":
     </div>
     """, unsafe_allow_html=True)
 
-    # Health check metrics
     health = check_system_health()
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Indexed Documents", health.get("pdf_document_count", 0), "PDF Files")
-    m2.metric("Knowledge Chunks", health.get("chunks_indexed", 0), "ChromaDB Vectors")
-    m3.metric("LLM Response Engine", "Groq LPU", "High-speed Inference")
+    m1.metric("Indexed Knowledge Docs", health.get("pdf_document_count", 0), "Official PDF Files")
+    m2.metric("Knowledge Vectors", health.get("chunks_indexed", 0), "ChromaDB Chunks")
+    m3.metric("Response Engine", "Groq LPU", "Sub-second Inference")
     m4.metric("Accreditation", "NAAC A+", "Autonomous · JNTUH")
 
     st.write("")
 
-    # College Profile Overview Card
     with st.container(border=True):
         st.markdown(f"### 🏛️ {config.COLLEGE_NAME}")
         st.markdown(f"""
@@ -711,19 +737,18 @@ elif st.session_state.page == "College Dashboard":
                 st.markdown(f"#### {emoji} {title}")
                 st.caption(desc)
                 if st.button("Ask Assistant →", key=f"dash_portal_{idx}", use_container_width=True):
-                    st.session_state.page = "AI Assistant"
-                    handle_user_query(prompt)
+                    set_pending_query(prompt)
                     st.rerun()
 
 
 # =========================================================
-# 8. VIEW: DOCUMENT VAULT & INGESTION
+# 8. WORKSPACE: DOCUMENT VAULT & INGESTION
 # =========================================================
 elif st.session_state.page == "Document Vault":
     st.markdown("""
     <div style="margin-bottom: 20px;">
       <div style="font-size: 11px; font-weight: 700; color: #818CF8; letter-spacing: 1.5px; text-transform: uppercase;">
-        MIST · KNOWLEDGE REPOSITORY
+        MIST · KNOWLEDGE VAULT
       </div>
       <h2 style="margin: 4px 0 6px 0;">Document Vault & Vector Ingestion</h2>
       <p style="color: #94A3B8; font-size: 14px; margin: 0;">
@@ -782,7 +807,7 @@ elif st.session_state.page == "Document Vault":
                 col_info, col_btn = st.columns([4, 1.2])
                 with col_info:
                     st.markdown(f"**📄 {pdf_path.name}**")
-                    st.caption(f"Size: {file_size_kb} KB · Last modified: {modified_time} · Path: `{pdf_path.name}`")
+                    st.caption(f"Size: {file_size_kb} KB · Last modified: {modified_time}")
                 with col_btn:
                     with st.popover("Preview Content 👁️", use_container_width=True):
                         st.markdown(f"**Document Preview: {pdf_path.name}**")
@@ -797,7 +822,7 @@ elif st.session_state.page == "Document Vault":
 
 
 # =========================================================
-# 9. VIEW: SEMANTIC SEARCH LAB
+# 9. WORKSPACE: SEMANTIC SEARCH LAB
 # =========================================================
 elif st.session_state.page == "Semantic Search Lab":
     st.markdown("""
@@ -841,13 +866,13 @@ elif st.session_state.page == "Semantic Search Lab":
                             st.caption("Relevance Match")
                     with doc_col:
                         st.markdown(f"**Source Document:** `{match['source']}` (Page {match['page']})")
-                        st.markdown(f"<div class='source-snippet'>{match['content']}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='source-excerpt'>{match['content']}</div>", unsafe_allow_html=True)
                         if match.get("urls"):
                             st.caption(f"Detected links: {', '.join(match['urls'])}")
 
 
 # =========================================================
-# 10. VIEW: USAGE ANALYTICS
+# 10. WORKSPACE: USAGE ANALYTICS
 # =========================================================
 elif st.session_state.page == "Usage Analytics":
     st.markdown("""
@@ -871,12 +896,20 @@ elif st.session_state.page == "Usage Analytics":
 
     a1, a2, a3, a4 = st.columns(4)
     a1.metric("Total Messages", total_msgs, "Current Session")
-    a2.metric("Student Questions", student_q, "Queries processed")
+    a2.metric("Student Inquiries", student_q, "Queries processed")
     a3.metric("AI Responses", ai_resp, "Generated")
     a4.metric("Avg Response Speed", f"{avg_latency}s" if avg_latency else "Sub-sec", "Groq LPU Latency")
 
     st.write("")
-    st.markdown("### 📋 Recent Query Audit Log")
+
+    # Visual chart if we have queries
+    if st.session_state.query_analytics:
+        st.markdown("### 📊 Query Latency Distribution (Seconds)")
+        df = pd.DataFrame(st.session_state.query_analytics)
+        st.bar_chart(df, x="query", y="latency", color="#6366F1", height=240)
+
+    st.write("")
+    st.markdown("### 📋 Query Audit Log")
 
     if not st.session_state.query_analytics:
         st.info("No queries have been submitted in this session yet. Ask a question in the AI Assistant tab to see telemetry.")
@@ -897,7 +930,7 @@ elif st.session_state.page == "Usage Analytics":
 
 
 # =========================================================
-# 11. VIEW: SETTINGS & SYSTEM HEALTH
+# 11. WORKSPACE: SETTINGS & SYSTEM HEALTH
 # =========================================================
 elif st.session_state.page == "Settings & Health":
     st.markdown("""
@@ -918,7 +951,6 @@ elif st.session_state.page == "Settings & Health":
         with st.container(border=True):
             st.markdown("### ⚙️ Inference & Retrieval Parameters")
 
-            # Model selector
             st.session_state.selected_model = st.selectbox(
                 "Active Groq LLM Model",
                 options=config.AVAILABLE_MODELS,
@@ -926,7 +958,6 @@ elif st.session_state.page == "Settings & Health":
                 help="Select which high-speed model generates answers from retrieved documents.",
             )
 
-            # Top-K documents
             st.session_state.top_k = st.slider(
                 "Top-K Document Chunks to Retrieve",
                 min_value=1,
@@ -935,14 +966,13 @@ elif st.session_state.page == "Settings & Health":
                 help="Higher values provide more context to the LLM but slightly increase prompt size.",
             )
 
-            # Temperature
             st.session_state.temperature = st.slider(
                 "LLM Temperature (Creativity vs Determinism)",
                 min_value=0.0,
                 max_value=1.0,
                 value=float(st.session_state.temperature),
                 step=0.05,
-                help="Lower values (0.0-0.2) ensure factual adherence to college documents.",
+                help="Lower values (0.0-0.2) ensure strict adherence to college documents.",
             )
 
             st.write("")

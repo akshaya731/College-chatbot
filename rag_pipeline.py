@@ -140,6 +140,92 @@ def extract_urls(text: str) -> List[str]:
     return list(dict.fromkeys(re.findall(url_pattern, text)))
 
 
+def prepare_rag_context(
+    question: str,
+    top_k: int = DEFAULT_TOP_K,
+) -> Tuple[str, List[Dict[str, Any]], str]:
+    """
+    Retrieves documents, builds prompt, and extracts verified sources.
+    Returns (prompt, structured_sources, context_text).
+    """
+    vectorstore = get_cached_vectorstore()
+    retriever = vectorstore.as_retriever(search_kwargs={"k": top_k})
+    documents = retriever.invoke(question.strip())
+
+    if not documents:
+        fallback_prompt = (
+            f"Question: {question}\n\n"
+            f"No context found in official {COLLEGE_NAME} documents. State that this information is "
+            f"not available in the college documents and advise contacting the college office at {COLLEGE_PHONE} or {COLLEGE_EMAIL}."
+        )
+        return fallback_prompt, [], ""
+
+    context_parts = []
+    structured_sources = []
+
+    for doc in documents:
+        source = doc.metadata.get("source_filename") or os.path.basename(doc.metadata.get("source", "College Document"))
+        page = doc.metadata.get("page", 0)
+        page_display = page + 1 if isinstance(page, int) else page
+        content = doc.page_content.strip()
+        urls = extract_urls(content)
+
+        context_parts.append(f"Source: {source} (Page {page_display})\n{content}")
+        structured_sources.append({
+            "source": str(source),
+            "page": page_display,
+            "snippet": content[:280] + ("..." if len(content) > 280 else ""),
+            "full_text": content,
+            "urls": urls,
+        })
+
+    context_text = "\n\n".join(context_parts)
+    prompt = build_college_rag_prompt(context_text, question.strip())
+    return prompt, structured_sources, context_text
+
+
+def get_suggested_followups(question: str, answer: str = "") -> List[str]:
+    """Generates 3 contextual follow-up questions to help the student continue inquiry."""
+    q_lower = (question + " " + answer).lower()
+
+    if any(k in q_lower for k in ["fee", "payment", "tuition", "cost", "charge"]):
+        return [
+            "What fee information is available for MBA and Diploma?",
+            "How does admission eligibility work for B.Tech?",
+            "What scholarship details are available in the documents?",
+        ]
+    elif any(k in q_lower for k in ["admission", "eligibility", "eamcet", "apply", "counselling"]):
+        return [
+            "What is the published fee structure for B.Tech?",
+            "What academic departments and specialisations exist?",
+            "What are the attendance regulations for students?",
+        ]
+    elif any(k in q_lower for k in ["attendance", "condonation", "absent", "regulation", "m24", "r22"]):
+        return [
+            "What are the examination and grading regulations?",
+            "What are the contact details for the college office?",
+            "What programs and degrees are offered at MIST?",
+        ]
+    elif any(k in q_lower for k in ["exam", "grading", "cie", "see", "hall ticket", "results"]):
+        return [
+            "What syllabus links and regulations are mentioned?",
+            "What are the attendance requirements for appearing in exams?",
+            "What departments and courses are available at MIST?",
+        ]
+    elif any(k in q_lower for k in ["department", "faculty", "cse", "ece", "eee", "mech", "civil", "course"]):
+        return [
+            "What is the intake and history of the CSE department?",
+            "What are the eligibility criteria for admissions?",
+            "What facilities and computing labs are available?",
+        ]
+    else:
+        return [
+            "What is the published fee structure for MIST courses?",
+            "What are the B.Tech admission and entrance requirements?",
+            "Where is MIST located and what are the contact details?",
+        ]
+
+
 # --------------------------------------------------
 # 4. CORE RAG RETRIEVAL & INFERENCE
 # --------------------------------------------------
