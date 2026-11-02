@@ -111,6 +111,14 @@ def get_cached_llm(model_name: Optional[str] = None, temperature: float = DEFAUL
     api_key = os.getenv("GROQ_API_KEY", GROQ_API_KEY)
     if not api_key:
         raise ValueError("Groq API key not found. Please set GROQ_API_KEY in your .env file.")
+        if not api_key:
+    try:
+        api_key = st.secrets["GROQ_API_KEY"]
+    except Exception:
+        api_key = None
+
+if not api_key:
+    raise ValueError("Groq API key not found. Please configure GROQ_API_KEY.")
 
     target_model = model_name or DEFAULT_LLM_MODEL
     cache_key = f"{target_model}_{temperature}"
