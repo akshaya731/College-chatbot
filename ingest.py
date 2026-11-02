@@ -147,6 +147,15 @@ def build_vector_database(
         separators=["\n\n", "\n", ". ", " ", ""],
     )
     chunks = splitter.split_documents(loaded_documents)
+    if not chunks:
+        return {
+            "success": False,
+            "error": "The supplied PDFs did not produce any searchable text chunks. The existing index was left unchanged.",
+            "documents_count": len(pdf_files),
+            "chunks_count": 0,
+            "elapsed_seconds": round(time.time() - start_time, 2),
+            "files": file_details,
+        }
 
     # Step 3: Embeddings
     if progress_callback:
@@ -164,8 +173,15 @@ def build_vector_database(
         if CHROMA_COLLECTION_NAME in existing_collections:
             client.delete_collection(CHROMA_COLLECTION_NAME)
     except Exception as reset_err:
-        # If collection deletion fails or folder is fresh, continue
-        pass
+        # Stop instead of silently indexing into a stale or partially reset collection.
+        return {
+            "success": False,
+            "error": f"Could not safely prepare the Chroma collection: {reset_err}",
+            "documents_count": len(pdf_files),
+            "chunks_count": 0,
+            "elapsed_seconds": round(time.time() - start_time, 2),
+            "files": file_details,
+        }
 
     # Step 5: Index documents
     if progress_callback:
