@@ -791,34 +791,6 @@ if st.session_state.page == "AI Assistant":
                             if st.button(fq[:48]+"…" if len(fq)>48 else fq, key=f"fup_{idx}_{fi}", use_container_width=True):
                                 set_pending(fq); st.rerun()
 
-    # Keep the newest user/assistant message visible above the fixed chat composer.
-    if st.session_state.messages:
-        components.html(
-            """
-            <script>
-            (() => {
-                const parentDoc = window.parent.document;
-                const scrollToLatest = () => {
-                    const messages = parentDoc.querySelectorAll('[data-testid="stChatMessage"]');
-                    const latest = messages.length ? messages[messages.length - 1] : null;
-                    if (latest) {
-                        latest.style.scrollMarginBottom = '120px';
-                        latest.scrollIntoView({ behavior: 'smooth', block: 'end' });
-                    } else {
-                        const main = parentDoc.querySelector('[data-testid="stMain"]');
-                        if (main) main.scrollTo({ top: main.scrollHeight, behavior: 'smooth' });
-                    }
-                };
-                setTimeout(scrollToLatest, 100);
-                setTimeout(scrollToLatest, 350);
-                setTimeout(scrollToLatest, 750);
-            })();
-            </script>
-            """,
-            height=1,
-            scrolling=False,
-        )
-
     # ── STREAMING ANSWER ──
     if st.session_state.pending_query:
         q = st.session_state.pending_query
@@ -838,9 +810,7 @@ if st.session_state.page == "AI Assistant":
             if is_conversational_greeting(q):
                 fast_greeting = get_conversational_response(q)
                 def stream_greeting():
-                    for word in fast_greeting.split(" "):
-                        yield word + " "
-                        time.sleep(0.015)
+                    yield fast_greeting
                 response = st.write_stream(stream_greeting())
                 sources = []
                 elapsed = round(time.perf_counter() - t0, 2)
@@ -900,6 +870,33 @@ if st.session_state.page == "AI Assistant":
     if user_q:
         set_pending(user_q); st.rerun()
 
+    # Keep the newest user/assistant message visible above the fixed chat composer.
+    if st.session_state.messages:
+        components.html(
+            """
+            <script>
+            (() => {
+                const parentDoc = window.parent.document;
+                const scrollToLatest = () => {
+                    const messages = parentDoc.querySelectorAll('[data-testid="stChatMessage"]');
+                    const latest = messages.length ? messages[messages.length - 1] : null;
+                    if (latest) {
+                        latest.style.scrollMarginBottom = '120px';
+                        latest.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                    } else {
+                        const main = parentDoc.querySelector('[data-testid="stMain"]');
+                        if (main) main.scrollTo({ top: main.scrollHeight, behavior: 'smooth' });
+                    }
+                };
+                setTimeout(scrollToLatest, 100);
+                setTimeout(scrollToLatest, 350);
+                setTimeout(scrollToLatest, 750);
+            })();
+            </script>
+            """,
+            height=1,
+            scrolling=False,
+        )
 
 # ─────────────────────────────────────────────
 # 7. COLLEGE DASHBOARD
