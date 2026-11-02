@@ -1,0 +1,22 @@
+name: Python syntax check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile application modules
+        run: python -m compileall -q app.py config.py ingest.py rag_pipeline.py
+      - name: Validate Streamlit TOML configuration
+        run: python -c "import tomllib; tomllib.load(open('.streamlit/config.toml', 'rb'))"
