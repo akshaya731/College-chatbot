@@ -503,7 +503,13 @@ def stream_answer(
 # --------------------------------------------------
 def check_system_health() -> Dict[str, Any]:
     """Runs diagnostics on API key, documents folder, vector store, and LLM connectivity."""
-    has_groq_key = bool(os.getenv("GROQ_API_KEY", GROQ_API_KEY))
+    api_key = os.getenv("GROQ_API_KEY") or GROQ_API_KEY
+    if not api_key:
+        try:
+            api_key = st.secrets["GROQ_API_KEY"]
+        except Exception:
+            api_key = None
+    has_groq_key = bool(api_key)
     has_docs_folder = DOCUMENTS_DIR.exists()
     pdf_count = len(list(DOCUMENTS_DIR.glob("*.pdf"))) if has_docs_folder else 0
     has_chroma_dir = CHROMA_DB_DIR.exists()
