@@ -792,6 +792,48 @@ if st.session_state.page == "AI Assistant":
                             if st.button(fq[:48]+"…" if len(fq)>48 else fq, key=f"fup_{idx}_{fi}", use_container_width=True):
                                 set_pending(fq); st.rerun()
 
+    # ── MIST_AUTO_SCROLL_TO_LATEST ──
+    # Scroll the browser to the newest rendered chat message after each rerun.
+    if st.session_state.messages:
+        components.html(
+            """
+            <script>
+            (() => {
+                const parentWindow = window.parent;
+                const parentDocument = parentWindow.document;
+
+                const scrollToLatestMessage = () => {
+                    const chatMessages = parentDocument.querySelectorAll(
+                        '[data-testid="stChatMessage"]'
+                    );
+                    const latestMessage = chatMessages.length
+                        ? chatMessages[chatMessages.length - 1]
+                        : null;
+
+                    if (latestMessage) {
+                        latestMessage.scrollIntoView({
+                            behavior: "smooth",
+                            block: "end"
+                        });
+                    } else {
+                        parentWindow.scrollTo({
+                            top: parentDocument.documentElement.scrollHeight,
+                            behavior: "smooth"
+                        });
+                    }
+                };
+
+                // Streamlit finishes laying out chat elements after this iframe renders.
+                setTimeout(scrollToLatestMessage, 150);
+                setTimeout(scrollToLatestMessage, 450);
+                setTimeout(scrollToLatestMessage, 900);
+            })();
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+
     # ── STREAMING ANSWER ──
     if st.session_state.pending_query:
         q = st.session_state.pending_query
