@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from pypdf import PdfReader
 
@@ -765,7 +766,7 @@ if st.session_state.page == "AI Assistant":
                                     data=fpath.read_bytes(),
                                     file_name=fname,
                                     mime="application/pdf",
-                                    key=f"dl_hist_{idx}_{d_idx}",
+                                    key=f"dl_live_{len(st.session_state.messages)}_{d_idx}_{fname}",
                                     use_container_width=True,
                                 )
 
@@ -789,6 +790,34 @@ if st.session_state.page == "AI Assistant":
                         with fcols[fi]:
                             if st.button(fq[:48]+"…" if len(fq)>48 else fq, key=f"fup_{idx}_{fi}", use_container_width=True):
                                 set_pending(fq); st.rerun()
+
+    # Keep the newest user/assistant message visible above the fixed chat composer.
+    if st.session_state.messages:
+        components.html(
+            """
+            <script>
+            (() => {
+                const parentDoc = window.parent.document;
+                const scrollToLatest = () => {
+                    const messages = parentDoc.querySelectorAll('[data-testid="stChatMessage"]');
+                    const latest = messages.length ? messages[messages.length - 1] : null;
+                    if (latest) {
+                        latest.style.scrollMarginBottom = '120px';
+                        latest.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                    } else {
+                        const main = parentDoc.querySelector('[data-testid="stMain"]');
+                        if (main) main.scrollTo({ top: main.scrollHeight, behavior: 'smooth' });
+                    }
+                };
+                setTimeout(scrollToLatest, 100);
+                setTimeout(scrollToLatest, 350);
+                setTimeout(scrollToLatest, 750);
+            })();
+            </script>
+            """,
+            height=1,
+            scrolling=False,
+        )
 
     # ── STREAMING ANSWER ──
     if st.session_state.pending_query:
@@ -818,7 +847,8 @@ if st.session_state.page == "AI Assistant":
             else:
                 with st.spinner("Searching official MIST knowledge base…"):
                     prompt, sources, _ = prepare_rag_context(q, top_k=st.session_state.top_k)
-                llm = get_cached_llm(model_name=st.session_state.selected_model, temperature=st.session_state.temperature)
+                with st.spinner("Connecting to the answer engine…"):
+                    llm = get_cached_llm(model_name=st.session_state.selected_model, temperature=st.session_state.temperature)
                 response = st.write_stream(chunk.content for chunk in llm.stream(prompt) if chunk.content)
                 elapsed = round(time.perf_counter() - t0, 2)
 
