@@ -120,6 +120,23 @@ def build_vector_database(
             "files": file_details,
         }
 
+    failed_files = [item for item in file_details if item["status"] != "loaded"]
+    if failed_files:
+        failure_summary = "; ".join(
+            f"{item['filename']}: {item['status']}" for item in failed_files
+        )
+        return {
+            "success": False,
+            "error": (
+                "Indexing was cancelled because one or more PDFs could not be read. "
+                "The existing vector index was left unchanged. " + failure_summary
+            ),
+            "documents_count": sum(1 for item in file_details if item["status"] == "loaded"),
+            "chunks_count": 0,
+            "elapsed_seconds": round(time.time() - start_time, 2),
+            "files": file_details,
+        }
+
     # Step 2: Split documents into chunks
     if progress_callback:
         progress_callback("Splitting documents into optimized chunks...", 0.45)
