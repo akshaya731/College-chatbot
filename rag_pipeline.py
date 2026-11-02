@@ -155,7 +155,7 @@ def get_cached_llm(model_name: Optional[str] = None, temperature: float = DEFAUL
 # --------------------------------------------------
 def build_college_rag_prompt(context: str, question: str) -> str:
     """Creates a disciplined, college-specific prompt preventing hallucinations."""
-    return f"""You are CampusConnect AI, an intelligent, professional college FAQ assistant for {COLLEGE_NAME}.
+    return f"""You are MIST Connect AI, an intelligent, professional college FAQ assistant for {COLLEGE_NAME}.
 Your mission is to provide clear, helpful, accurate, and student-friendly answers based EXCLUSIVELY on the official college documents provided below.
 
 CRITICAL RULES:
@@ -193,16 +193,31 @@ def is_conversational_greeting(text: str) -> bool:
 
 
 def get_conversational_response(text: str) -> str:
-    """Instant sub-second greeting response."""
+    """Returns a short, context-aware response for common greetings."""
+    cleaned = re.sub(r"[^\\w\\s]", "", text.strip().lower())
+
+    if cleaned == "how are you":
+        return (
+            "I'm doing well, thank you! 😊 I'm ready to help you with MIST-related "
+            "questions about admissions, fees, attendance, examinations, and departments. "
+            "What would you like to know?"
+        )
+
+    if cleaned == "who are you":
+        return (
+            f"I'm **MIST Connect AI**, the virtual college assistant for **{COLLEGE_NAME}**. "
+            "I answer questions using the college documents available in my knowledge base."
+        )
+
     return (
-        f"Hello! 👋 Welcome to **CampusConnect AI**, the official virtual assistant for "
-        f"**{COLLEGE_NAME}**.\n\n"
-        f"I can help you with factual information directly from official college documents:\n"
-        f"• 💳 **Fee Structure:** Tuition and program amounts for B.Tech, M.Tech, MBA & Diploma\n"
-        f"• 🎓 **Admissions & Eligibility:** Entrance exams (EAMCET), counselling & criteria\n"
-        f"• 📅 **Attendance & Regulations:** M24 academic credits, condonation rules & semester duration\n"
-        f"• 📝 **Examinations & Grading:** Internal CIE and external SEE evaluation rules\n"
-        f"• 🔬 **Departments & Specialisations:** CSE (AI&ML, Data Science), ECE, EEE, Mechanical & Civil\n\n"
+        f"Hello! 👋 Welcome to **MIST Connect AI**, the official virtual assistant for "
+        f"**{COLLEGE_NAME}**.\\n\\n"
+        f"I can help with information from the college documents:\\n"
+        f"• 💳 **Fee Structure:** B.Tech, M.Tech, MBA and Diploma\\n"
+        f"• 🎓 **Admissions:** EAMCET, counselling and eligibility\\n"
+        f"• 📅 **Attendance:** Regulations and condonation\\n"
+        f"• 📝 **Examinations:** CIE and SEE evaluation\\n"
+        f"• 🔬 **Departments:** CSE, AI&ML, ECE, EEE, Mechanical and Civil\\n\\n"
         f"What would you like to know today?"
     )
 
@@ -352,7 +367,7 @@ def get_answer_detailed(
 
     if not question or not question.strip():
         return {
-            "answer": "Please enter a question to ask CampusConnect AI.",
+            "answer": "Please enter a question to ask MIST Connect AI.",
             "sources": [],
             "latency_seconds": 0.0,
             "model_used": model_name or DEFAULT_LLM_MODEL,
@@ -463,7 +478,7 @@ def stream_answer(
 ) -> Generator[str, None, None]:
     """Streams response tokens in real-time."""
     if not question or not question.strip():
-        yield "Please enter a question to ask CampusConnect AI."
+        yield "Please enter a question to ask MIST Connect AI."
         return
 
     selected_model = model_name or DEFAULT_LLM_MODEL
@@ -549,7 +564,7 @@ if __name__ == "__main__":
             pass
 
     print("=" * 60)
-    print("CampusConnect AI - MIST College Assistant Diagnostic")
+    print("MIST Connect AI - MIST College Assistant Diagnostic")
     print("=" * 60)
 
     health = check_system_health()
