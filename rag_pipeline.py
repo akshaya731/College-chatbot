@@ -108,7 +108,7 @@ def reload_vectorstore() -> Chroma:
 
 def get_cached_llm(model_name: Optional[str] = None, temperature: float = DEFAULT_TEMPERATURE) -> ChatGroq:
     """Returns a cached instance of ChatGroq with specified model and temperature."""
-        api_key = os.getenv("GROQ_API_KEY", GROQ_API_KEY)
+            api_key = os.getenv("GROQ_API_KEY", GROQ_API_KEY)
 
     if not api_key:
         try:
