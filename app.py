@@ -61,7 +61,7 @@ for k, v in {
         st.session_state[k] = v
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Warming up MIST Connect AI and loading the college knowledge base…")
 def prewarm_rag_engine():
     """Pre-warms embedding weights and vectorstore on startup to avoid cold start lag."""
     try:
@@ -69,7 +69,8 @@ def prewarm_rag_engine():
         get_cached_embeddings()
         get_cached_vectorstore()
         return True
-    except Exception:
+    except Exception as exc:
+        print(f"[MIST RAG warmup] {type(exc).__name__}: {exc}")
         return False
 
 # Initialize in-memory RAG singleton on startup
