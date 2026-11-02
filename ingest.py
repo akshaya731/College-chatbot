@@ -3,6 +3,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
+from functools import lru_cache
 
 # Ensure Windows stdout/stderr uses UTF-8 to prevent charmap encoding crashes
 if sys.platform.startswith("win"):
@@ -39,8 +40,9 @@ from config import (
 )
 
 
+@lru_cache(maxsize=1)
 def get_embedding_function():
-    """Initializes and returns the HuggingFace embedding function with normalized vectors."""
+    """Returns one reusable Hugging Face embedding instance per app process."""
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={"device": "cpu"},
