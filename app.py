@@ -845,6 +845,8 @@ if st.session_state.page == "AI Assistant":
                     response = st.write_stream(
                         chunk.content for chunk in llm.stream(prompt) if chunk.content
                     )
+                    if not response or not str(response).strip():
+                        raise RuntimeError("The answer engine returned an empty response.")
             except Exception as exc:
                 answer_ok = False
                 sources = []
