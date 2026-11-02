@@ -833,7 +833,9 @@ if st.session_state.page == "AI Assistant":
                 else:
                     with st.spinner("Searching official MIST knowledge base…"):
                         prompt, sources, _ = prepare_rag_context(
-                            q, top_k=st.session_state.top_k
+                            q,
+                            top_k=st.session_state.top_k,
+                            conversation_history=st.session_state.messages[:-1][-6:],
                         )
                     with st.spinner("Generating an answer with the AI assistant…"):
                         llm = get_cached_llm(
@@ -1015,7 +1017,7 @@ elif st.session_state.page == "Document Vault":
             else:
                 st.error("Incorrect administrator password.")
 
-    if st.session_state.admin_authenticated:
+    if admin_password and st.session_state.admin_authenticated:
         st.success("Administrator access enabled for this session.")
         if st.button("Log out of document management", key="admin_logout"):
             st.session_state.admin_authenticated = False
@@ -1028,7 +1030,7 @@ elif st.session_state.page == "Document Vault":
                 st.caption("Upload an official PDF such as a fee circular, syllabus or examination notice.")
                 up = st.file_uploader("Choose PDF", type=["pdf"], key="uploader")
                 if up:
-                    safe_filename = Path(up.name).name
+                    safe_filename = Path(up.name.replace("\\", "/")).name
                     if st.button(f"Save '{safe_filename}'", key="save_doc", type="primary"):
                         try:
                             # Validate the PDF before saving it to the application documents folder.
