@@ -1,4 +1,5 @@
 import os
+import hmac
 import sys
 import time
 from datetime import datetime
@@ -56,6 +57,7 @@ for k, v in {
     "query_analytics": [],
     "feedback_store": {},
     "pending_query": None,
+    "admin_authenticated": False,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -63,6 +65,17 @@ for k, v in {
 # Keep existing browser sessions working after the Settings page was renamed.
 if st.session_state.page == "Settings & Health":
     st.session_state.page = "System Health"
+
+
+def get_admin_password() -> str:
+    """Read the admin password from Streamlit Secrets or an environment variable."""
+    try:
+        value = st.secrets["ADMIN_PASSWORD"]
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.getenv("ADMIN_PASSWORD", "")
 
 
 @st.cache_resource(show_spinner="Warming up MIST Connect AI and loading the college knowledge base…")
@@ -651,17 +664,26 @@ with st.sidebar:
             if st.button(f"◦  {short}", key=f"hist_{i}", use_container_width=True):
                 set_pending(q); st.rerun()
 
-    # Status card
+    # Live status card (avoid hard-coded document and vector counts).
+    try:
+        sidebar_health = check_system_health()
+    except Exception as health_error:
+        print(f"[MIST sidebar health] {type(health_error).__name__}: {health_error}")
+        sidebar_health = {}
+    system_ok = bool(sidebar_health.get("groq_key_configured")) and sidebar_health.get("vector_status") == "Healthy"
+    status_label = "System Online" if system_ok else "Needs attention"
+    status_icon = '<span class="dot-live"></span>' if system_ok else '<span style="color:#F59E0B;">●</span>'
     st.markdown(f"""
     <div class="sb-status">
       <div style="margin-bottom:8px;">
-        <span class="dot-live"></span>
-        <strong>System Online</strong>
+        {status_icon}
+        <strong>{status_label}</strong>
       </div>
       <div style="color:#64748B; font-size:11px; line-height:1.8;">
         <span style="color:#94A3B8;">Engine:</span> {st.session_state.selected_model.split('/')[-1]}<br>
-        <span style="color:#94A3B8;">Docs:</span> 6 PDFs · 22 Vectors<br>
-        <span style="color:#94A3B8;">DB:</span> ChromaDB (Cached)
+        <span style="color:#94A3B8;">Docs:</span> {sidebar_health.get('pdf_document_count', 0)} PDFs<br>
+        <span style="color:#94A3B8;">Vectors:</span> {sidebar_health.get('chunks_indexed', 0)}<br>
+        <span style="color:#94A3B8;">Groq:</span> {'Configured' if sidebar_health.get('groq_key_configured') else 'Not configured'}
       </div>
       <div style="margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.06); font-size:10.5px; color:#4B5563; line-height:1.8;">
         📞 {config.COLLEGE_PHONE}<br>
@@ -758,7 +780,7 @@ if st.session_state.page == "AI Assistant":
                                     data=fpath.read_bytes(),
                                     file_name=fname,
                                     mime="application/pdf",
-                                    key=f"dl_live_{len(st.session_state.messages)}_{d_idx}_{fname}",
+                                    key=f"dl_hist_{idx}_{d_idx}_{fname}",
                                     use_container_width=True,
                                 )
 
@@ -783,48 +805,6 @@ if st.session_state.page == "AI Assistant":
                             if st.button(fq[:48]+"…" if len(fq)>48 else fq, key=f"fup_{idx}_{fi}", use_container_width=True):
                                 set_pending(fq); st.rerun()
 
-    # ── MIST_AUTO_SCROLL_TO_LATEST ──
-    # Scroll the browser to the newest rendered chat message after each rerun.
-    if st.session_state.messages:
-        components.html(
-            """
-            <script>
-            (() => {
-                const parentWindow = window.parent;
-                const parentDocument = parentWindow.document;
-
-                const scrollToLatestMessage = () => {
-                    const chatMessages = parentDocument.querySelectorAll(
-                        '[data-testid="stChatMessage"]'
-                    );
-                    const latestMessage = chatMessages.length
-                        ? chatMessages[chatMessages.length - 1]
-                        : null;
-
-                    if (latestMessage) {
-                        latestMessage.scrollIntoView({
-                            behavior: "smooth",
-                            block: "end"
-                        });
-                    } else {
-                        parentWindow.scrollTo({
-                            top: parentDocument.documentElement.scrollHeight,
-                            behavior: "smooth"
-                        });
-                    }
-                };
-
-                // Streamlit finishes laying out chat elements after this iframe renders.
-                setTimeout(scrollToLatestMessage, 150);
-                setTimeout(scrollToLatestMessage, 450);
-                setTimeout(scrollToLatestMessage, 900);
-            })();
-            </script>
-            """,
-            height=0,
-            width=0,
-        )
-
     # ── STREAMING ANSWER ──
     if st.session_state.pending_query:
         q = st.session_state.pending_query
@@ -839,22 +819,39 @@ if st.session_state.page == "AI Assistant":
             st.markdown(q)
 
         t0 = time.perf_counter()
+        answer_ok = True
+        sources = []
+        followups = []
+        response = ""
+
         with st.chat_message("assistant", avatar="🎓"):
-            # Instant Greeting Fast-Path
-            if is_conversational_greeting(q):
-                fast_greeting = get_conversational_response(q)
-                def stream_greeting():
-                    yield fast_greeting
-                response = st.write_stream(stream_greeting())
+            try:
+                # Instant local greeting path does not need embeddings or Groq.
+                if is_conversational_greeting(q):
+                    response = get_conversational_response(q)
+                    st.markdown(response)
+                else:
+                    with st.spinner("Searching official MIST knowledge base…"):
+                        prompt, sources, _ = prepare_rag_context(
+                            q, top_k=st.session_state.top_k
+                        )
+                    with st.spinner("Generating an answer with the AI assistant…"):
+                        llm = get_cached_llm(
+                            model_name=st.session_state.selected_model,
+                            temperature=st.session_state.temperature,
+                        )
+                    response = st.write_stream(
+                        chunk.content for chunk in llm.stream(prompt) if chunk.content
+                    )
+            except Exception as exc:
+                answer_ok = False
                 sources = []
-                elapsed = round(time.perf_counter() - t0, 2)
-            else:
-                with st.spinner("Searching official MIST knowledge base…"):
-                    prompt, sources, _ = prepare_rag_context(q, top_k=st.session_state.top_k)
-                with st.spinner("Connecting to the answer engine…"):
-                    llm = get_cached_llm(model_name=st.session_state.selected_model, temperature=st.session_state.temperature)
-                response = st.write_stream(chunk.content for chunk in llm.stream(prompt) if chunk.content)
-                elapsed = round(time.perf_counter() - t0, 2)
+                print(f"[MIST chat error] {type(exc).__name__}: {exc}")
+                response = (
+                    "Sorry, I couldn't complete that request right now. Please try again. "
+                    "If the problem continues, contact the college office using the details in the sidebar."
+                )
+                st.warning(response)
 
             if sources:
                 with st.expander(f"📚 {len(sources)} verified source(s) cited", expanded=False):
@@ -864,7 +861,7 @@ if st.session_state.page == "AI Assistant":
                         for u in src.get("urls", []):
                             st.markdown(f"🔗 [Official Link]({u})")
 
-                    unique_files = list(dict.fromkeys(s["source"] for s in sources))
+                    unique_files = list(dict.fromkeys(item["source"] for item in sources))
                     dl_cols = st.columns(min(len(unique_files), 3))
                     for d_idx, fname in enumerate(unique_files[:3]):
                         fpath = config.DOCUMENTS_DIR / fname
@@ -875,11 +872,15 @@ if st.session_state.page == "AI Assistant":
                                     data=fpath.read_bytes(),
                                     file_name=fname,
                                     mime="application/pdf",
-                                    key=f"dl_hist_{idx}_{d_idx}",
+                                    key=f"dl_live_{len(st.session_state.messages)}_{d_idx}_{fname}",
                                     use_container_width=True,
                                 )
 
-            st.caption(f"⚡ {elapsed}s · {st.session_state.selected_model.split('/')[-1]} · {datetime.now().strftime('%H:%M')}")
+            elapsed = round(time.perf_counter() - t0, 2)
+            st.caption(
+                f"⚡ {elapsed}s · {st.session_state.selected_model.split('/')[-1]} · "
+                f"{datetime.now().strftime('%H:%M')}"
+            )
             followups = get_suggested_followups(q, response or "")
 
         st.session_state.messages.append({
@@ -895,7 +896,7 @@ if st.session_state.page == "AI Assistant":
             "latency": elapsed,
             "sources_count": len(sources),
             "model": st.session_state.selected_model.split("/")[-1],
-            "status": "✅ Success",
+            "status": "✅ Success" if answer_ok else "⚠️ Failed",
         })
         st.rerun()
 
@@ -995,32 +996,82 @@ elif st.session_state.page == "Document Vault":
     </div>
     """, unsafe_allow_html=True)
 
-    left, right = st.columns([2, 1])
-    with left:
-        with st.container(border=True):
-            st.markdown("#### 📤 Upload New Document")
-            st.caption("Upload fee circulars, syllabus PDFs, exam notifications, or brochures.")
-            up = st.file_uploader("Choose PDF", type=["pdf"], key="uploader")
-            if up:
-                dest = config.DOCUMENTS_DIR / up.name
-                if st.button(f"Save '{up.name}'", key="save_doc", type="primary"):
-                    dest.write_bytes(up.getbuffer())
-                    st.success(f"Saved '{up.name}'. Rebuild index to activate it.")
-                    st.rerun()
+    admin_password = get_admin_password()
 
-    with right:
-        with st.container(border=True):
-            st.markdown("#### ⚡ Rebuild Index")
-            st.caption("Recompute embeddings from all vault PDFs.")
-            if st.button("Re-index Knowledge Base 🔄", key="reindex", use_container_width=True, type="primary"):
-                pb = st.progress(0, "Starting…")
-                info = st.empty()
-                result = build_vector_database(progress_callback=lambda m,p: pb.progress(int(p*100), m))
-                if result["success"]:
-                    reload_vectorstore()
-                    info.success(f"✅ Indexed {result['documents_count']} docs · {result['chunks_count']} chunks · {result['elapsed_seconds']}s")
-                else:
-                    info.error(f"❌ {result.get('error')}")
+    if not admin_password:
+        st.warning(
+            "Document management is locked. The app owner must add ADMIN_PASSWORD "
+            "under Streamlit app settings → Secrets to enable administrator access."
+        )
+    elif not st.session_state.admin_authenticated:
+        with st.form("document_admin_login"):
+            st.markdown("#### 🔐 Administrator access")
+            entered_password = st.text_input("Admin password", type="password")
+            login_submitted = st.form_submit_button("Unlock document management", use_container_width=True)
+        if login_submitted:
+            if hmac.compare_digest(entered_password, admin_password):
+                st.session_state.admin_authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect administrator password.")
+
+    if st.session_state.admin_authenticated:
+        st.success("Administrator access enabled for this session.")
+        if st.button("Log out of document management", key="admin_logout"):
+            st.session_state.admin_authenticated = False
+            st.rerun()
+
+        left, right = st.columns([2, 1])
+        with left:
+            with st.container(border=True):
+                st.markdown("#### 📤 Upload New Document")
+                st.caption("Upload an official PDF such as a fee circular, syllabus or examination notice.")
+                up = st.file_uploader("Choose PDF", type=["pdf"], key="uploader")
+                if up:
+                    safe_filename = Path(up.name).name
+                    if st.button(f"Save '{safe_filename}'", key="save_doc", type="primary"):
+                        try:
+                            # Validate the PDF before saving it to the application documents folder.
+                            reader = PdfReader(up)
+                            if len(reader.pages) == 0:
+                                raise ValueError("The selected PDF contains no pages.")
+                            dest = config.DOCUMENTS_DIR / safe_filename
+                            dest.write_bytes(up.getbuffer())
+                            st.success(f"Saved '{safe_filename}'. Rebuild the index to activate it.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not save this PDF: {exc}")
+
+        with right:
+            with st.container(border=True):
+                st.markdown("#### ⚡ Rebuild Index")
+                st.caption("Recompute embeddings from all college PDFs.")
+                if st.button("Re-index Knowledge Base 🔄", key="reindex", use_container_width=True, type="primary"):
+                    pb = st.progress(0, "Starting…")
+                    info = st.empty()
+                    try:
+                        result = build_vector_database(
+                            progress_callback=lambda m, p: pb.progress(int(p * 100), m)
+                        )
+                        if result["success"]:
+                            reload_vectorstore()
+                            info.success(
+                                f"✅ Indexed {result['documents_count']} PDFs · "
+                                f"{result['chunks_count']} chunks · {result['elapsed_seconds']}s"
+                            )
+                        else:
+                            info.error(f"❌ {result.get('error', 'Indexing failed.')}")
+                    except Exception as exc:
+                        print(f"[MIST re-index error] {type(exc).__name__}: {exc}")
+                        info.error("Index rebuilding failed. The app logs contain technical details.")
+
+        st.info(
+            "Storage note: files uploaded here are saved on the app instance. "
+            "For long-term storage on Streamlit Cloud, add official PDFs to the GitHub "
+            "documents/ folder or connect durable object storage."
+        )
+    else:
+        st.info("The document list below is read-only. Administrator access is required to upload PDFs or rebuild the index.")
 
     st.write("")
     st.markdown("### 📄 Vault Contents")
