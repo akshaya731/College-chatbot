@@ -194,7 +194,7 @@ def is_conversational_greeting(text: str) -> bool:
 
 def get_conversational_response(text: str) -> str:
     """Returns a short, context-aware response for common greetings."""
-    cleaned = re.sub(r"[^\\w\\s]", "", text.strip().lower())
+    cleaned = re.sub(r"[^\w\s]", "", text.strip().lower())
 
     if cleaned == "how are you":
         return (
@@ -211,13 +211,13 @@ def get_conversational_response(text: str) -> str:
 
     return (
         f"Hello! 👋 Welcome to **MIST Connect AI**, the official virtual assistant for "
-        f"**{COLLEGE_NAME}**.\\n\\n"
-        f"I can help with information from the college documents:\\n"
-        f"• 💳 **Fee Structure:** B.Tech, M.Tech, MBA and Diploma\\n"
-        f"• 🎓 **Admissions:** EAMCET, counselling and eligibility\\n"
-        f"• 📅 **Attendance:** Regulations and condonation\\n"
-        f"• 📝 **Examinations:** CIE and SEE evaluation\\n"
-        f"• 🔬 **Departments:** CSE, AI&ML, ECE, EEE, Mechanical and Civil\\n\\n"
+        f"**{COLLEGE_NAME}**.\n\n"
+        f"I can help with information from the college documents:\n"
+        f"• 💳 **Fee Structure:** B.Tech, M.Tech, MBA and Diploma\n"
+        f"• 🎓 **Admissions:** EAMCET, counselling and eligibility\n"
+        f"• 📅 **Attendance:** Regulations and condonation\n"
+        f"• 📝 **Examinations:** CIE and SEE evaluation\n"
+        f"• 🔬 **Departments:** CSE, AI&ML, ECE, EEE, Mechanical and Civil\n\n"
         f"What would you like to know today?"
     )
 
