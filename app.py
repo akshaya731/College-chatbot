@@ -690,7 +690,7 @@ if st.session_state.page == "AI Assistant":
         st.markdown(f"""
         <div style="padding:16px 0 10px;">
           <div class="page-eyebrow">🎓 {config.COLLEGE_SHORT_NAME} · Academic Intelligence Platform</div>
-          <h2 class="page-title">CampusConnect AI</h2>
+          <h2 class="page-title">MIST Connect AI</h2>
           <p class="page-desc">Instant answers grounded in official M24/R22 regulations, fee circulars, and departmental data.</p>
         </div>
         """, unsafe_allow_html=True)
@@ -1160,7 +1160,7 @@ elif st.session_state.page == "Settings & Health":
 
     st.write("")
     with st.container(border=True):
-        st.markdown("#### ℹ️ About CampusConnect AI")
+        st.markdown("#### ℹ️ About MIST Connect AI")
         st.markdown(f"""
 **{config.COLLEGE_NAME}** — Official AI-powered FAQ assistant.
 
