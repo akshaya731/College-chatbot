@@ -55,6 +55,7 @@ from config import (
     COLLEGE_WEBSITE,
     COLLEGE_LOCATION,
 )
+from ingest import build_vector_database
 
 # --------------------------------------------------
 # 1. ENVIRONMENT CONFIGURATION
@@ -89,9 +90,15 @@ def get_cached_vectorstore(force_reload: bool = False) -> Chroma:
     global _CACHED_VECTORSTORE
     if force_reload or _CACHED_VECTORSTORE is None:
         if not Path(CHROMA_DB_DIR).exists():
-            raise FileNotFoundError(
-                f"ChromaDB not found at {CHROMA_DB_DIR}. Please run ingest.py or click 'Re-index' in the app."
-            )
+            result = build_vector_database()
+
+            if not result.get("success"):
+                raise RuntimeError(
+                    f"ChromaDB creation failed: {result.get('error', 'Unknown error')}"
+                )
+
+            _CACHED_VECTORSTORE = None
+        
         embeddings = get_cached_embeddings()
         _CACHED_VECTORSTORE = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
