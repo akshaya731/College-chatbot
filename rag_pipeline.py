@@ -86,25 +86,35 @@ def get_cached_embeddings() -> HuggingFaceEmbeddings:
 
 
 def get_cached_vectorstore(force_reload: bool = False) -> Chroma:
-    """Returns a singleton instance of the Chroma vector store."""
+    """Load ChromaDB and build it from the bundled PDFs when the collection is empty."""
     global _CACHED_VECTORSTORE
-    if force_reload or _CACHED_VECTORSTORE is None:
-        if not Path(CHROMA_DB_DIR).exists():
-            result = build_vector_database()
 
-            if not result.get("success"):
-                raise RuntimeError(
-                    f"ChromaDB creation failed: {result.get('error', 'Unknown error')}"
-                )
+    if force_reload:
+        _CACHED_VECTORSTORE = None
 
-            _CACHED_VECTORSTORE = None
-        
+    if _CACHED_VECTORSTORE is None:
         embeddings = get_cached_embeddings()
-        _CACHED_VECTORSTORE = Chroma(
+        store = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
             embedding_function=embeddings,
             collection_name=CHROMA_COLLECTION_NAME,
         )
+
+        # The directory may exist but contain no indexed vectors (common on cloud deploys).
+        if store._collection.count() == 0:
+            result = build_vector_database()
+            if not result.get("success"):
+                raise RuntimeError(
+                    f"ChromaDB creation failed: {result.get('error', 'Unknown error')}"
+                )
+            store = Chroma(
+                persist_directory=str(CHROMA_DB_DIR),
+                embedding_function=embeddings,
+                collection_name=CHROMA_COLLECTION_NAME,
+            )
+
+        _CACHED_VECTORSTORE = store
+
     return _CACHED_VECTORSTORE
 
 
@@ -115,7 +125,7 @@ def reload_vectorstore() -> Chroma:
 
 def get_cached_llm(model_name: Optional[str] = None, temperature: float = DEFAULT_TEMPERATURE) -> ChatGroq:
     """Returns a cached instance of ChatGroq with specified model and temperature."""
-            api_key = os.getenv("GROQ_API_KEY", GROQ_API_KEY)
+    api_key = os.getenv("GROQ_API_KEY") or GROQ_API_KEY
 
     if not api_key:
         try:
