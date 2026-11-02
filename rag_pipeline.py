@@ -16,6 +16,7 @@ if sys.platform.startswith("win"):
         pass
 
 from dotenv import load_dotenv
+import streamlit as st
 
 try:
     from langchain_huggingface import HuggingFaceEmbeddings
