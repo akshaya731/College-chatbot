@@ -60,6 +60,10 @@ for k, v in {
     if k not in st.session_state:
         st.session_state[k] = v
 
+# Keep existing browser sessions working after the Settings page was renamed.
+if st.session_state.page == "Settings & Health":
+    st.session_state.page = "System Health"
+
 
 @st.cache_resource(show_spinner="Warming up MIST Connect AI and loading the college knowledge base…")
 def prewarm_rag_engine():
@@ -612,7 +616,7 @@ with st.sidebar:
         ("📁", "Document Vault"),
         ("🔍", "Semantic Search Lab"),
         ("📈", "Usage Analytics"),
-        ("⚙️", "Settings & Health"),
+        ("⚙️", "System Health"),
     ]
     for icon, label in nav_items:
         active = st.session_state.page == label
@@ -646,19 +650,6 @@ with st.sidebar:
             short = q[:28] + ("…" if len(q) > 28 else "")
             if st.button(f"◦  {short}", key=f"hist_{i}", use_container_width=True):
                 set_pending(q); st.rerun()
-
-    # Design Studio Connectors
-    st.markdown('<div class="sb-section">Design Studio</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div style="padding: 0 10px; margin-bottom: 6px;">
-      <a href="https://www.figma.com/design/hALGvS4Oin6XzaE7sFKV9j" target="_blank" style="text-decoration:none; display:flex; align-items:center; gap:8px; padding:8px 12px; background:rgba(99,102,241,0.12); border:1px solid rgba(99,102,241,0.3); border-radius:8px; color:#CAD8FF; font-size:12px; font-weight:600; margin-bottom:6px;">
-        <span>🎨</span> Figma UI Architecture ↗
-      </a>
-      <a href="https://canva.link/wm3n3kn0r5b7khr" target="_blank" style="text-decoration:none; display:flex; align-items:center; gap:8px; padding:8px 12px; background:rgba(59,130,246,0.12); border:1px solid rgba(59,130,246,0.3); border-radius:8px; color:#93C5FD; font-size:12px; font-weight:600;">
-        <span>✨</span> Canva Portal Banner ↗
-      </a>
-    </div>
-    """, unsafe_allow_html=True)
 
     # Status card
     st.markdown(f"""
@@ -962,24 +953,6 @@ elif st.session_state.page == "College Dashboard":
 
     st.write("")
     with st.container(border=True):
-        st.markdown("### 🎨 Design Studio Assets (Figma & Canva)")
-        st.caption("Visual assets, layout architecture, and banners created via connected design tools:")
-        c_figma, c_canva = st.columns(2)
-        with c_figma:
-            st.markdown("""
-            **🎨 Figma UI Architecture**  
-            Multi-workspace design system, token bindings, and component layouts.  
-            [👉 Open Figma Design (hALGvS4Oin6XzaE7sFKV9j)](https://www.figma.com/design/hALGvS4Oin6XzaE7sFKV9j)
-            """)
-        with c_canva:
-            st.markdown("""
-            **✨ Canva Campus Portal Banner**  
-            Executive dark-theme campus hero layout and promotional visual cards.  
-            [👉 Open Canva Design (DAHZlnkLxsY)](https://canva.link/wm3n3kn0r5b7khr)
-            """)
-
-    st.write("")
-    with st.container(border=True):
         st.markdown(f"### 🏛️ {config.COLLEGE_NAME}")
         st.markdown(f"""
 - **Established:** {config.COLLEGE_ESTD}
@@ -1159,86 +1132,77 @@ elif st.session_state.page == "Usage Analytics":
 
 
 # ─────────────────────────────────────────────
-# 11. SETTINGS & HEALTH
+# 11. SYSTEM HEALTH
 # ─────────────────────────────────────────────
-elif st.session_state.page == "Settings & Health":
+elif st.session_state.page == "System Health":
     st.markdown("""
     <div style="padding:16px 0 20px;">
-      <div class="page-eyebrow">Configuration</div>
-      <h2 class="page-title">Settings & System Health</h2>
-      <p class="page-desc">Configure inference parameters, switch models, and run live diagnostics.</p>
+      <div class="page-eyebrow">MIST · SYSTEM STATUS</div>
+      <h2 class="page-title">System Health</h2>
+      <p class="page-desc">A simple status check for the chatbot, college documents, and AI connection.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    cl, cr = st.columns([2.2, 1.5])
-    with cl:
-        with st.container(border=True):
-            st.markdown("#### ⚙️ Inference Parameters")
-            st.session_state.selected_model = st.selectbox(
-                "LLM Model (Groq)",
-                config.AVAILABLE_MODELS,
-                index=config.AVAILABLE_MODELS.index(st.session_state.selected_model)
-                      if st.session_state.selected_model in config.AVAILABLE_MODELS else 0,
-                help="Which Groq LPU model generates the answer from retrieved documents.",
-            )
-            st.session_state.top_k = st.slider(
-                "Top-K Retrieved Chunks", 1, 8, st.session_state.top_k,
-                help="Higher K = more context but larger prompt.",
-            )
-            st.session_state.temperature = st.slider(
-                "Temperature", 0.0, 1.0, float(st.session_state.temperature), 0.05,
-                help="0.0 = deterministic, 1.0 = creative. Keep ≤0.3 for factual college answers.",
-            )
-            st.write("")
-            if st.button("Save Settings", type="primary", use_container_width=True):
-                st.toast("Settings applied!", icon="✅")
+    h = check_system_health()
 
-    with cr:
-        with st.container(border=True):
-            st.markdown("#### 🩺 Health Diagnostics")
-            h = check_system_health()
-            status_map = {
-                "groq_key_configured":       ("Groq API Key",      True),
-                "documents_folder_exists":   ("Docs Folder",       True),
-                "pdf_document_count":        ("PDF Count",         None),
-                "chroma_dir_exists":         ("Chroma DB",         True),
-                "vector_status":             ("Vector Status",     None),
-                "chunks_indexed":            ("Chunks Indexed",    None),
-                "embedding_model":           ("Embedding Model",   None),
-                "default_llm_model":         ("Default LLM",       None),
-            }
-            for key, (label, is_bool) in status_map.items():
-                val = h.get(key, "—")
-                if is_bool:
-                    icon = "✅" if val else "❌"
-                    st.markdown(f"**{label}:** {icon}")
-                else:
-                    st.markdown(f"**{label}:** `{val}`")
+    with st.container(border=True):
+        st.markdown("#### 🩺 Service diagnostics")
+        status_cols = st.columns(4)
+        status_cols[0].metric(
+            "Groq API key",
+            "Configured" if h.get("groq_key_configured") else "Missing",
+        )
+        status_cols[1].metric(
+            "College PDFs",
+            h.get("pdf_document_count", 0),
+        )
+        status_cols[2].metric(
+            "Indexed chunks",
+            h.get("chunks_indexed", 0),
+        )
+        status_cols[3].metric(
+            "Vector database",
+            "Healthy" if h.get("vector_status") == "Healthy" else "Check",
+        )
 
-            st.write("")
-            if st.button("📡 Ping Groq API", use_container_width=True):
-                with st.spinner("Testing…"):
-                    try:
-                        from rag_pipeline import get_cached_llm as gcl
-                        lm = gcl(model_name=st.session_state.selected_model)
-                        t0 = time.time()
-                        lm.invoke("ping")
-                        ms = round((time.time()-t0)*1000, 1)
-                        st.success(f"Connected! Latency: {ms}ms")
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+        if not h.get("groq_key_configured"):
+            st.warning(
+                "Groq API key is not configured. Add GROQ_API_KEY under "
+                "Streamlit app settings → Secrets to enable AI answers to college questions."
+            )
 
-    st.write("")
+        if not h.get("documents_folder_exists") or h.get("pdf_document_count", 0) == 0:
+            st.warning("No college PDF documents were found. Check the documents folder in GitHub.")
+
+        if h.get("vector_status") != "Healthy":
+            st.warning(f"Vector database status: {h.get('vector_status', 'Unknown')}")
+
+        st.caption(f"Embedding model: {h.get('embedding_model', '—')}")
+        st.caption(f"Default language model: {h.get('default_llm_model', '—')}")
+
+        if st.button("📡 Test Groq connection", use_container_width=True):
+            with st.spinner("Testing the Groq connection…"):
+                try:
+                    from rag_pipeline import get_cached_llm as gcl
+                    lm = gcl(model_name=st.session_state.selected_model)
+                    t0 = time.perf_counter()
+                    lm.invoke("Reply with the single word: connected")
+                    ms = round((time.perf_counter() - t0) * 1000, 1)
+                    st.success(f"Groq connection successful · {ms} ms")
+                except Exception as e:
+                    st.error(f"Groq connection failed: {e}")
+
     with st.container(border=True):
         st.markdown("#### ℹ️ About MIST Connect AI")
         st.markdown(f"""
-**{config.COLLEGE_NAME}** — Official AI-powered FAQ assistant.
+**{config.COLLEGE_NAME}** — the college information assistant.
 
 | Component | Detail |
 |---|---|
-| Vector DB | ChromaDB · `{config.CHROMA_DB_DIR}` |
-| Embedding | `{config.EMBEDDING_MODEL}` · {config.EMBEDDING_DIMENSIONS}d |
-| LLM Provider | Groq LPUs (Sub-second inference) |
-| Framework | LangChain · Streamlit |
-| Safety | Strict prompt guardrails — no invented data |
+| Interface | Streamlit |
+| AI orchestration | LangChain |
+| Language model provider | Groq |
+| Vector database | ChromaDB |
+| Embedding model | `{config.EMBEDDING_MODEL}` |
+| Knowledge source | College PDF documents |
         """)
