@@ -55,7 +55,7 @@ from config import (
     COLLEGE_WEBSITE,
     COLLEGE_LOCATION,
 )
-from ingest import build_vector_database
+from ingest import build_vector_database, get_embedding_function
 
 # --------------------------------------------------
 # 1. ENVIRONMENT CONFIGURATION
@@ -74,14 +74,10 @@ _CACHED_LLM_CLIENTS: Dict[str, ChatGroq] = {}
 
 
 def get_cached_embeddings() -> HuggingFaceEmbeddings:
-    """Returns a singleton instance of the HuggingFace embedding model."""
+    """Returns the shared, cached Hugging Face embedding instance."""
     global _CACHED_EMBEDDINGS
     if _CACHED_EMBEDDINGS is None:
-        _CACHED_EMBEDDINGS = HuggingFaceEmbeddings(
-            model_name=EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        _CACHED_EMBEDDINGS = get_embedding_function()
     return _CACHED_EMBEDDINGS
 
 
