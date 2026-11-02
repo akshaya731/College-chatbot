@@ -1,75 +1,114 @@
-# CampusConnect AI · MIST College Chatbot (RAG 2.0)
+# MIST Connect AI
 
-An intelligent Retrieval-Augmented Generation (RAG) assistant for **Mother Teresa Institute of Science and Technology (MIST)**, providing students, parents, and faculty with verified answers regarding admissions, fees, attendance regulations, examinations, and departments.
+A Retrieval-Augmented Generation (RAG) college information assistant for **Mother Teresa Institute of Science and Technology (MIST)**. The app uses Streamlit, LangChain, Hugging Face sentence-transformer embeddings, ChromaDB and Groq.
 
----
+## Features
 
-## 🌟 Key Features & Improvements
+- **AI Assistant:** Ask questions about college admissions, fees, attendance, examinations and departments.
+- **Document-grounded answers:** Retrieves relevant PDF passages and displays source filenames, page numbers and excerpts alongside answers.
+- **Conversational greetings:** Handles common greetings locally without calling the language model.
+- **Document Vault:** View the bundled college PDFs. Uploading and rebuilding the index are restricted to an administrator.
+- **Semantic Search Lab:** Inspect retrieved document passages and relevance scores.
+- **College Dashboard:** College profile details and quick links to common academic questions.
+- **Usage Analytics:** Session-level message counts and response-time information.
+- **System Health:** Checks the Groq configuration, PDF count and vector index status.
 
-- **⚡ 40x Faster Responses (0.6s Sub-second Latency)**: Implemented in-memory singleton caching for PyTorch embedding models and ChromaDB vectorstore.
-- **📚 Verified Sources & Citations**: Every answer includes an expandable citation drawer showing the exact source PDF filename, page number, verified snippet, and portal link.
-- **🛡️ Anti-Hallucination Guardrails**: Strict context boundary prompting ensures the assistant never invents fee amounts, dates, percentages, or regulations.
-- **🔄 In-App Document Vault & Upload**: Upload new college PDFs via drag-and-drop and rebuild the vector database with a single click in the UI without server restarts.
-- **🔍 Semantic Search Lab**: Direct vector database exploration tool allowing students and faculty to test Chroma similarity retrieval with relevance scores.
-- **📊 Operations Dashboard & Telemetry**: Real-time KPI metrics, query audit logs, latency tracking, and system health checks.
-- **⚙️ Model Flexibility & Fallback**: Support for `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, and `qwen/qwen3.8-27b` via Groq LPUs.
-- **🪟 Windows Encoding & Lock Fixes**: Reconfigured UTF-8 stdout/stderr across all scripts to eliminate `UnicodeEncodeError` (charmap/cp1252) and safe Chroma collection resets to prevent `WinError 32` file locks.
+> Answers depend on the content and freshness of the supplied college PDFs. The application should not be treated as an official policy notice. Students should confirm time-sensitive or consequential matters with the college office.
 
----
+## Project structure
 
-## 📂 Project Architecture
-
-```
-RAG-CLG/
-├── app.py              # Modern Streamlit UI with 6 interactive workspaces
-├── rag_pipeline.py     # High-performance cached RAG retrieval & LLM inference
-├── ingest.py           # Document ingestion, text chunking & vector indexing
-├── config.py           # Centralized college settings, models & hyperparameters
-├── requirements.txt    # Production dependencies
-├── .env                # Environment variables (GROQ_API_KEY)
-├── documents/          # Knowledge repository (PDF circulars, syllabi, profiles)
-│   ├── admission_details.pdf
-│   ├── attendance_rules.pdf
-│   ├── college_profile.pdf
-│   ├── departments_faculty.pdf
-│   ├── exam_information.pdf
-│   └── fee_structure.pdf
-└── chroma_db/          # Persistent Chroma vector store
+```text
+College-chatbot/
+├── app.py
+├── config.py
+├── ingest.py
+├── rag_pipeline.py
+├── requirements.txt
+├── .streamlit/
+│   └── config.toml
+└── documents/
+    ├── admission_details.pdf
+    ├── attendance_rules.pdf
+    ├── college_profile.pdf
+    ├── departments_faculty.pdf
+    ├── exam_information.pdf
+    └── fee_structure.pdf
 ```
 
----
+The ChromaDB directory is generated locally at runtime and is intentionally excluded from Git.
 
-## 🚀 Quickstart Guide
+## Run locally (Windows PowerShell)
 
-### 1. Setup Environment
-Ensure your virtual environment is active and requirements are installed:
-```bash
-.\venv\Scripts\pip install -r requirements.txt
+1. Create and activate a virtual environment:
+
+```powershell
+py -m venv venv
+.\venv\Scripts\Activate.ps1
 ```
 
-### 2. Configure API Key
-Create or verify your `.env` file in the root directory:
+2. Install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+3. Create a `.env` file in the project root:
+
 ```env
-GROQ_API_KEY=your_groq_api_key_here
+GROQ_API_KEY=your_groq_api_key
+ADMIN_PASSWORD=choose_a_long_unique_admin_password
 ```
 
-### 3. Build Vector Index (Optional if already built)
-```bash
-.\venv\Scripts\python ingest.py
+4. Build the vector index:
+
+```powershell
+python ingest.py
 ```
-*(You can also rebuild the index directly inside the web UI under the **Document Vault** tab)*
 
-### 4. Run the Application
-```bash
-.\venv\Scripts\streamlit run app.py
+5. Start Streamlit:
+
+```powershell
+streamlit run app.py
 ```
-Open [http://localhost:8501](http://localhost:8501) in your browser.
 
----
+Open http://localhost:8501.
 
-## 🏛️ Official College Details
-- **Institution:** Mother Teresa Institute of Science and Technology (MIST)
-- **Status:** Autonomous · NAAC A+ Grade · Approved by AICTE & UGC · Affiliated to JNTUH
-- **Location:** Sanketika Nagar, Kothuru, Sathupally, Khammam Dist, Telangana - 507303
-- **Helpline:** +91 9494641251 | info@mist.edu.in | [mist.edu.in](https://mist.edu.in)
+## Deploy to Streamlit Community Cloud
 
+Connect the GitHub repository and choose `app.py` as the main file. In the app's **Settings → Secrets**, add:
+
+```toml
+GROQ_API_KEY = "your_groq_api_key"
+ADMIN_PASSWORD = "choose_a_long_unique_admin_password"
+```
+
+Do not commit `.env`, `.streamlit/secrets.toml`, API keys or passwords to GitHub. If a key was ever committed, revoke it and create a replacement.
+
+The Document Vault requires the `ADMIN_PASSWORD` secret. Without it, the vault remains read-only. Uploaded files are stored on the running app instance; for durable cloud storage, add official PDFs to the repository's `documents/` folder or connect a persistent object-storage service. Streamlit Community Cloud can restart or rebuild an app, so local runtime files should not be treated as permanent storage.
+
+## Rebuild the knowledge base
+
+When the PDFs in `documents/` change, run:
+
+```powershell
+python ingest.py
+```
+
+Or sign in as an administrator and use **Document Vault → Re-index Knowledge Base**. If any PDF cannot be read, ingestion stops before replacing the existing index.
+
+## Technology stack
+
+- Python
+- Streamlit
+- LangChain
+- Hugging Face `sentence-transformers/all-MiniLM-L6-v2`
+- ChromaDB
+- Groq API
+- PyPDF
+
+## College details
+
+**Mother Teresa Institute of Science and Technology (MIST)**  
+Sanketika Nagar, Kothuru, Sathupally, Khammam District, Telangana - 507303  
+Website: https://mist.edu.in  
+Email: info@mist.edu.in
