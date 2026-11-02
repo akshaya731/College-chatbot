@@ -10,7 +10,7 @@ MIST Connect AI helps students and visitors find information about **Mother Tere
   <a href="https://github.com/akshaya731/College-chatbot"><strong>GitHub repository</strong></a>
 </p>
 
-![Python](https://img.shields.io/badge/Python-3.12%2B-blue) ![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B) ![RAG](https://img.shields.io/badge/Architecture-RAG-6C63FF) ![Vector DB](https://img.shields.io/badge/Vector%20DB-ChromaDB-2E8B57)
+![Python](https://img.shields.io/badge/Python-3.x-blue) ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-success) ![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B) ![RAG](https://img.shields.io/badge/Architecture-RAG-6C63FF) ![Vector DB](https://img.shields.io/badge/Vector%20DB-ChromaDB-2E8B57)
 
 ---
 
